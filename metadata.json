@@ -1,0 +1,8 @@
+{
+  "name": "Robot Recruiter",
+  "description": "Робот Рекрутер (Robot Recruiter) - ИИ платформа для автоматического найма, проведения кейс-интервью и индивидуального обучения сотрудников.",
+  "requestFramePermissions": [
+    "microphone",
+    "display-capture"
+  ]
+}

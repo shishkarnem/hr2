@@ -1,0 +1,791 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-gold-text: #E7C768;
+  /* ===== Brand palette (single source of truth for ALL editors/forms/tests) ===== */
+  --color-brand-blue-1: #17344F;
+  --color-brand-blue-2: #265582;
+  --color-brand-blue: #1E4468;
+  --color-brand-gold-1: #F4EE8E;
+  --color-brand-gold-2: #D99E41;
+  --color-brand-gold: #E7C768;
+  --color-brand-ink: #1A1A1A;
+  --color-brand-surface: #EFEFEF;
+  --color-brand-border: #DBDBDB;
+  --color-brand-border-focus: #E7C768;
+  --color-brand-border-error: #FF4C4C;
+  --color-brand-btn-1: #FF1A1A;
+  --color-brand-btn-2: #E54C00;
+  --color-brand-btn-off: #E0E3EB;
+  --color-brand-btn-off-text: #9DA3AF;
+}
+
+html {
+  background-color: #17344F !important;
+  color-scheme: dark;
+  overscroll-behavior-y: none;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #17344F;
+  color: #FFFFFF;
+  min-height: 100vh;
+  overscroll-behavior-y: none;
+}
+
+/* ============================================================
+   GLOBAL & COMPONENT SCROLLBARS — Apple Liquid Glass Gold
+   Бегунок прокрутки: золотой градиент на прозрачном фоне
+   во всех модальных окнах, контейнерах, страницах и панелях.
+   ============================================================ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--landing-icon-color, #E7C768) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--landing-icon-color, linear-gradient(180deg, #F4EE8E 0%, #E7C768 50%, #D99E41 100%)) !important;
+  border-radius: 9999px !important;
+}
+
+*::-webkit-scrollbar-thumb:horizontal {
+  background: var(--landing-icon-color, linear-gradient(90deg, #F4EE8E 0%, #E7C768 50%, #D99E41 100%)) !important;
+  border-radius: 9999px !important;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--landing-icon-color, linear-gradient(180deg, #FFFFFF 0%, #E7C768 60%, #D99E41 100%)) !important;
+  filter: brightness(1.15);
+}
+
+*::-webkit-scrollbar-thumb:horizontal:hover {
+  background: var(--landing-icon-color, linear-gradient(90deg, #FFFFFF 0%, #E7C768 60%, #D99E41 100%)) !important;
+  filter: brightness(1.15);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/* Sophisticated Dark Helper Classes */
+.main-gradient {
+  background: linear-gradient(135deg, #17344F 0%, #265582 100%);
+}
+
+.gold-gradient {
+  background: linear-gradient(135deg, #F4EE8E 0%, #D99E41 100%);
+}
+
+/* ============================================================
+   BRAND EDITOR STYLE — Apple Liquid Glass поверх синего бренд-
+   градиента. Используется во ВСЕХ редакторах/формах/тестах:
+   карточка синяя (17344F → 265582), текст белый, заголовки —
+   золотой градиент, поля — стеклянные с подсветкой.
+   ============================================================ */
+.editor-shell,
+.editor-section {
+  background: linear-gradient(135deg, #17344F 0%, #265582 100%);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 1.25rem;
+  color: #FFFFFF;
+  box-shadow: 0 20px 60px -20px rgba(10,25,45,0.55);
+}
+.editor-label {
+  background: linear-gradient(135deg, #F4EE8E 0%, #D99E41 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 700;
+}
+.editor-hint { color: rgba(255,255,255,0.7); }
+.editor-field {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #FFFFFF;
+  border-radius: 0.75rem;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+.editor-field::placeholder { color: rgba(255,255,255,0.55); }
+.editor-field:focus,
+.editor-field:focus-visible {
+  outline: none;
+  border-color: #E7C768;
+  background: rgba(255,255,255,0.14);
+  box-shadow: 0 0 0 3px rgba(231, 199, 104, 0.25);
+}
+.editor-field[aria-invalid="true"],
+.editor-field.is-error {
+  border-color: #FF4C4C;
+  box-shadow: 0 0 0 3px rgba(255, 76, 76, 0.18);
+}
+.editor-dropzone {
+  background: rgba(255,255,255,0.06);
+  border: 2px dashed rgba(255,255,255,0.25);
+  border-radius: 1rem;
+  color: #FFFFFF;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.editor-dropzone:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: #E7C768;
+}
+
+.btn-brand-primary {
+  background: linear-gradient(135deg, #FF1A1A 0%, #E54C00 100%);
+  color: #FFFFFF;
+  border: none;
+  font-weight: 700;
+  border-radius: 0.75rem;
+  transition: filter .15s ease, transform .05s ease;
+}
+.btn-brand-primary:hover { filter: brightness(1.05); }
+.btn-brand-primary:active { transform: translateY(1px); }
+.btn-brand-primary:disabled,
+.btn-brand-primary[disabled] {
+  background: #E0E3EB;
+  color: #9DA3AF;
+  cursor: not-allowed;
+  filter: none;
+}
+.btn-brand-secondary {
+  background: linear-gradient(135deg, #17344F 0%, #265582 100%);
+  color: #FFFFFF;
+  border: none;
+  font-weight: 700;
+  border-radius: 0.75rem;
+}
+.btn-brand-secondary:disabled {
+  background: #E0E3EB;
+  color: #9DA3AF;
+  cursor: not-allowed;
+}
+.btn-brand-gold {
+  background: linear-gradient(135deg, #F4EE8E 0%, #D99E41 100%);
+  color: #1A1A1A;
+  border: none;
+  font-weight: 700;
+  border-radius: 0.75rem;
+}
+
+/* ============================================================
+   .brand-editor — корень любого редактора/формы/мастера/теста.
+   Apple Liquid Glass: синий градиент-фон, белый текст,
+   золотые заголовки, стеклянные поля. Скоуп переопределяет
+   как тёмно-серое легаси (bg-black/40, text-slate-300), так и
+   белое легаси (bg-white, text-[#1A1A1A], text-[#1E4468],
+   border-[#DBDBDB]) — чтобы не править сотни классов руками.
+   ============================================================ */
+.brand-editor {
+  background: linear-gradient(135deg, #17344F 0%, #265582 100%) !important;
+  color: #FFFFFF !important;
+  border-color: rgba(255,255,255,0.12) !important;
+  box-shadow: 0 20px 60px -20px rgba(10,25,45,0.55);
+}
+.brand-editor.bg-transparent,
+.brand-editor[class*="bg-transparent"] {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* Density bump: больше воздуха и крупнее базовый текст в редакторах.
+   Заменяет точечный text-xs/text-[10px]/text-[11px] на 13–14px,
+   увеличивает поля ввода. Применяется только внутри .brand-editor. */
+.brand-editor { font-size: 14px; line-height: 1.55; }
+.brand-editor .text-xs { font-size: 13px !important; line-height: 1.55 !important; }
+.brand-editor .text-\[10px\] { font-size: 11px !important; }
+.brand-editor .text-\[11px\] { font-size: 12px !important; }
+.brand-editor .text-\[12px\] { font-size: 13px !important; }
+.brand-editor .font-mono { font-family: inherit !important; }
+
+/* ============================================================
+   .panel-readable — мягкий апскейл типографики для всех разделов
+   личного кабинета (профиль, обучение, интервью, CRM, тариф и т.д.).
+   В отличие от .brand-editor НЕ меняет фон/цвет — только размеры
+   шрифтов и плотность полей ввода, чтобы интерфейс читался крупнее
+   и единообразно во всех вкладках.
+   ============================================================ */
+.panel-readable { font-size: 14px; line-height: 1.55; }
+.panel-readable .text-xs { font-size: 13px !important; line-height: 1.55 !important; }
+.panel-readable .text-\[9px\] { font-size: 11px !important; }
+.panel-readable .text-\[9\.5px\] { font-size: 11.5px !important; }
+.panel-readable .text-\[10px\] { font-size: 12px !important; }
+.panel-readable .text-\[10\.5px\] { font-size: 12.5px !important; }
+.panel-readable .text-\[11px\] { font-size: 13px !important; }
+.panel-readable .text-\[12px\] { font-size: 13.5px !important; }
+.panel-readable .text-sm { font-size: 14.5px !important; }
+.panel-readable .text-base { font-size: 16px !important; }
+.panel-readable .text-lg { font-size: 19px !important; }
+.panel-readable input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.panel-readable textarea,
+.panel-readable select {
+  font-size: 14px !important;
+  padding: 0.65rem 0.85rem !important;
+  line-height: 1.5 !important;
+}
+.panel-readable textarea { padding: 0.8rem 0.95rem !important; line-height: 1.6 !important; }
+
+/* ============================================================
+   .sidebar-readable — апскейл шрифтов левого меню/баланса в ЛК.
+   Применяется к <aside> в EmployerPanel: пункты меню и блок
+   «Баланс и лимиты» становятся заметно крупнее и читабельнее.
+   ============================================================ */
+.sidebar-readable .text-xs { font-size: 12.5px !important; line-height: 1.35 !important; }
+.sidebar-readable .text-\[9px\] { font-size: 10px !important; letter-spacing: 0.06em; }
+.sidebar-readable .text-\[10px\] { font-size: 10.5px !important; }
+.sidebar-readable .text-\[11px\] { font-size: 12px !important; }
+.sidebar-readable h3.text-sm,
+.sidebar-readable h3 { font-size: 15px !important; }
+/* Все пункты меню — одна строка, бейдж и иконка не сжимаются. */
+.sidebar-readable button { gap: 0.5rem; }
+.sidebar-readable button > span { white-space: nowrap; }
+.sidebar-readable button > span:first-child { min-width: 0; flex: 1 1 auto; }
+.sidebar-readable button > span:last-child { flex-shrink: 0; }
+.sidebar-readable button svg { flex-shrink: 0; }
+
+/* ============================================================
+   CRM LAYOUT — реальная геометрия канбана и таблицы.
+   .crm-page — flex-колонка с фильтрами сверху и рабочей областью снизу.
+   .crm-workspace — рабочая область фиксированной адаптивной высоты.
+   .crm-kanban-viewport — единственный горизонтальный scroll канбана.
+   .crm-kanban-cards — вертикальный scroll списка карточек внутри колонки.
+   .crm-table-viewport — viewport таблицы с собственным scroll и sticky-шапкой.
+   ============================================================ */
+.crm-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.crm-controls {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.crm-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+@media (min-width: 1024px) {
+  .crm-page {
+    min-height: 0;
+    height: auto;
+    overflow: visible;
+  }
+  .crm-workspace {
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+    overflow: visible;
+  }
+}
+.crm-kanban-viewport {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+.crm-kanban-track {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  height: auto;
+  padding: 12px;
+}
+.crm-kanban-column {
+  width: 260px;
+  min-width: 260px;
+  flex: 0 0 260px;
+  height: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.crm-kanban-column-header {
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.crm-kanban-cards {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Ровно ~6 карточек по вертикали (карточка min-h 96px + gap 8px + отступы). */
+  max-height: calc(6 * 104px + 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+}
+
+/* Kanban shell + floating arrows (CRM hotfix v2) */
+.crm-kanban-shell { position: relative; height: auto; min-height: 0; overflow: hidden; }
+
+/* Top horizontal scrollbar strip (mirrors kanban viewport) */
+.crm-kanban-topscroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.crm-kanban-topscroll > div { height: 1px; }
+.crm-kanban-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 36px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(23, 52, 79, 0.78);
+  border: 1px solid rgba(231, 199, 104, 0.45);
+  color: #E7C768;
+  box-shadow: 0 6px 20px -8px rgba(0,0,0,0.6);
+  backdrop-filter: blur(8px);
+  transition: background-color .15s, opacity .15s, border-color .15s;
+}
+.crm-kanban-arrow:hover:not(:disabled) { background: rgba(23,52,79,0.95); border-color: #E7C768; }
+.crm-kanban-arrow:disabled { opacity: 0.25; cursor: default; }
+.crm-kanban-arrow-left  { left: 6px; }
+.crm-kanban-arrow-right { right: 6px; }
+
+/* Thin, calm vertical scrollbar inside each column */
+.crm-column-scroll { scrollbar-width: thin; scrollbar-color: #E7C768 transparent; }
+.crm-column-scroll::-webkit-scrollbar { width: 6px; }
+.crm-column-scroll::-webkit-scrollbar-track { background: transparent !important; }
+.crm-column-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #F4EE8E 0%, #E7C768 50%, #D99E41 100%) !important;
+  border-radius: 999px;
+}
+.crm-kanban-column:hover .crm-column-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #FFFFFF 0%, #E7C768 60%, #D99E41 100%) !important;
+}
+
+/* Visible golden horizontal scrollbar (only for kanban viewport) */
+.crm-kanban-h-scroll { scrollbar-color: #E7C768 transparent; scrollbar-width: thin; }
+.crm-kanban-h-scroll::-webkit-scrollbar { height: 8px; width: 0; }
+.crm-kanban-h-scroll::-webkit-scrollbar-track { background: transparent !important; border-radius: 999px; }
+.crm-kanban-h-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #F4EE8E, #D99E41) !important;
+  border-radius: 999px;
+}
+.crm-kanban-h-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #FFFFFF, #E7C768) !important;
+}
+.crm-table-shell { display: flex; flex-direction: column; }
+.crm-table-viewport {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  /* ~10 строк таблицы + шапка */
+  max-height: calc(10 * 78px + 48px);
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior-x: contain;
+}
+.crm-table-viewport thead th { background-color: #17344F; }
+
+/* Единый scrollbar для всех CRM scroll-областей. */
+.crm-scroll-area { scrollbar-color: #E7C768 transparent; scrollbar-width: thin; }
+.crm-scroll-area::-webkit-scrollbar { height: 8px; width: 8px; }
+.crm-scroll-area::-webkit-scrollbar-track {
+  background: transparent !important;
+  border-radius: 999px;
+}
+.crm-scroll-area::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #F4EE8E, #D99E41) !important;
+  border-radius: 999px;
+}
+.crm-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #FFFFFF, #E7C768) !important;
+}
+
+/* Внутри .brand-editor правила .brand-editor (более специфичные сами по себе
+   за счёт двойного класса) выигрывают — это ожидаемо. */
+.brand-editor input[type="text"],
+.brand-editor input[type="email"],
+.brand-editor input[type="url"],
+.brand-editor input[type="number"],
+.brand-editor input[type="tel"],
+.brand-editor input[type="search"],
+.brand-editor input[type="password"],
+.brand-editor input:not([type]),
+.brand-editor textarea,
+.brand-editor select {
+  background-color: rgba(255,255,255,0.08) !important;
+  border: 1px solid rgba(255,255,255,0.18) !important;
+  color: #FFFFFF !important;
+  border-radius: 0.75rem;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 14px !important;
+  padding: 0.7rem 0.85rem;
+  line-height: 1.5 !important;
+}
+.brand-editor input.pl-7 { padding-left: 1.75rem !important; }
+.brand-editor input.pl-8 { padding-left: 2rem !important; }
+.brand-editor input.pl-9 { padding-left: 2.25rem !important; }
+.brand-editor input.pl-10 { padding-left: 2.5rem !important; }
+.brand-editor input.pl-11 { padding-left: 2.75rem !important; }
+.brand-editor input.pl-12 { padding-left: 3rem !important; }
+.brand-editor textarea { padding: 0.85rem 1rem !important; line-height: 1.6 !important; }
+.brand-editor input::placeholder,
+.brand-editor textarea::placeholder { color: rgba(255,255,255,0.55) !important; }
+.brand-editor select option,
+.brand-editor select optgroup {
+  background-color: #17344F !important;
+  color: #FFFFFF !important;
+}
+.brand-editor input:focus,
+.brand-editor input:focus-visible,
+.brand-editor textarea:focus,
+.brand-editor textarea:focus-visible,
+.brand-editor select:focus,
+.brand-editor select:focus-visible {
+  border-color: #E7C768 !important;
+  background-color: rgba(255,255,255,0.14) !important;
+  box-shadow: 0 0 0 3px rgba(231, 199, 104, 0.25) !important;
+  outline: none !important;
+}
+.brand-editor input[aria-invalid="true"],
+.brand-editor textarea[aria-invalid="true"],
+.brand-editor .is-error {
+  border-color: #FF4C4C !important;
+  box-shadow: 0 0 0 3px rgba(255, 76, 76, 0.18) !important;
+}
+/* legacy dark text utilities → white */
+.brand-editor .text-slate-900,
+.brand-editor .text-slate-800,
+.brand-editor .text-slate-700,
+.brand-editor .text-slate-600,
+.brand-editor .text-slate-500,
+.brand-editor .text-slate-400,
+.brand-editor .text-slate-300,
+.brand-editor .text-slate-200,
+.brand-editor .text-slate-100,
+.brand-editor .text-white,
+.brand-editor .text-\[\#1A1A1A\],
+.brand-editor .text-\[\#1E4468\],
+.brand-editor .text-\[\#6B7280\] { color: #FFFFFF !important; }
+/* hints (smaller / mono) stay slightly dimmed */
+.brand-editor .text-\[10px\].text-\[\#6B7280\],
+.brand-editor .text-\[11px\].text-\[\#6B7280\],
+.brand-editor .editor-hint { color: rgba(255,255,255,0.7) !important; }
+/* legacy section headings → gold gradient (excluding themed vacancy cards and custom-styled containers) */
+.brand-editor h1:not(.vacancy-card *),
+.brand-editor h2:not(.vacancy-card *),
+.brand-editor h3:not(.vacancy-card *),
+.brand-editor h4:not(.vacancy-card *),
+.brand-editor .editor-label,
+.brand-editor span.text-\[\#E7C768\],
+.brand-editor div.text-\[\#E7C768\],
+.brand-editor p.text-\[\#E7C768\],
+.brand-editor a.text-\[\#E7C768\] {
+  background: linear-gradient(135deg, #F4EE8E 0%, #D99E41 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+.brand-editor svg {
+  background: none !important;
+  -webkit-background-clip: border-box !important;
+  background-clip: border-box !important;
+  -webkit-text-fill-color: initial !important;
+}
+/* legacy surfaces → glass */
+.brand-editor .bg-white,
+.brand-editor .bg-black\/45,
+.brand-editor .bg-black\/40,
+.brand-editor .bg-black\/30,
+.brand-editor .bg-slate-900\/40,
+.brand-editor .bg-slate-900\/60,
+.brand-editor .bg-slate-900\/80,
+.brand-editor .bg-slate-900,
+.brand-editor .bg-slate-800 {
+  background-color: rgba(255,255,255,0.08) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.brand-editor .border-white\/5,
+.brand-editor .border-white\/10,
+.brand-editor .border-white\/20,
+.brand-editor .border-\[\#DBDBDB\] { border-color: rgba(255,255,255,0.18) !important; }
+
+.card-blur {
+  background-color: rgba(30, 68, 104, 0.4);
+  border: 1px solid rgba(219, 219, 219, 0.1);
+  backdrop-filter: blur(8px);
+}
+
+/* Custom Markdown Body Styling for chat messages */
+.markdown-body {
+  font-size: inherit;
+  line-height: 1.5;
+}
+.markdown-body p {
+  margin-bottom: 0.5rem;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+.markdown-body li {
+  margin-bottom: 0.25rem;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  font-weight: 700;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  color: #E7C768;
+}
+.markdown-body strong {
+  font-weight: 700;
+}
+.markdown-body code {
+  font-family: monospace;
+  background-color: rgba(255, 255, 255, 0.15);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+}
+
+/* Hide scrollbar (used by sticky in-page nav chips) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Visible horizontal scrollbar for CRM kanban + tables */
+.crm-scroll { scrollbar-color: #E7C768 transparent; scrollbar-width: thin; }
+.crm-scroll::-webkit-scrollbar { height: 8px; width: 8px; }
+.crm-scroll::-webkit-scrollbar-track { background: transparent !important; border-radius: 999px; }
+.crm-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #F4EE8E, #D99E41) !important;
+  border-radius: 999px;
+}
+.crm-scroll::-webkit-scrollbar-thumb:hover { background: linear-gradient(90deg, #FFFFFF, #E7C768) !important; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ============================================================
+   Reveal-on-scroll utility (используется <Reveal/>)
+   Анимирует появление в обе стороны скролла.
+============================================================ */
+.reveal {
+  opacity: 0;
+  transform: translate3d(0, 0, 0);
+  transition-property: opacity, transform, filter;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.reveal-up    { transform: translate3d(0, 40px, 0); }
+.reveal-down  { transform: translate3d(0, -40px, 0); }
+.reveal-left  { transform: translate3d(-60px, 0, 0); }
+.reveal-right { transform: translate3d(60px, 0, 0); }
+.reveal-scale { transform: scale(0.92); }
+.reveal-fade  { transform: none; filter: blur(6px); }
+.reveal.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1 !important; transform: none !important; filter: none !important; }
+}
+
+/* ============================================================
+   AI wait overlay — мягкая «плавающая» анимация робота и
+   мерцающая полоса прогресса. Используются в AIWaitProvider.
+============================================================ */
+@keyframes aiwait-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}
+@keyframes aiwait-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Отключаем декоративную анимацию для пользователей с reduced-motion. */
+  [style*="aiwait-float"], .animate-\[aiwait-shimmer_2\.4s_linear_infinite\] {
+    animation: none !important;
+  }
+}
+
+/* ============================================================
+   Driver.js — фирменный стиль велком-тура работодателя.
+   Синий градиент + золотая обводка + glow на цели.
+============================================================ */
+.driver-popover.driver-popover {
+  background: linear-gradient(135deg, #17344F, #265582);
+  color: #fff;
+  border: 2px solid rgba(231,199,104,0.75);
+  border-radius: 22px;
+  box-shadow: 0 30px 80px -10px rgba(0,0,0,0.7), 0 0 0 1px rgba(231,199,104,0.25), 0 0 40px -8px rgba(231,199,104,0.35);
+  padding: 26px 26px 20px;
+  max-width: 480px;
+  min-width: 340px;
+  font-family: inherit;
+}
+.driver-popover-title {
+  color: #E7C768;
+  font-weight: 800;
+  font-size: 20px;
+  line-height: 1.3;
+  margin-bottom: 12px;
+}
+.driver-popover-description {
+  color: #E2E8F0;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.driver-popover-description b,
+.driver-popover-description strong {
+  color: #E7C768;
+  font-weight: 700;
+}
+.driver-popover-progress-text {
+  color: rgba(231,199,104,0.7);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.driver-popover-close-btn {
+  color: #cbd5e1 !important;
+  font-size: 22px !important;
+  top: 10px !important;
+  right: 12px !important;
+}
+.driver-popover-close-btn:hover { color: #fff !important; }
+.driver-popover-footer button.driver-popover-prev-btn,
+.driver-popover-footer button.driver-popover-next-btn {
+  background: linear-gradient(180deg, #E7C768, #D99E41);
+  color: #17344F;
+  font-weight: 800;
+  font-size: 13px;
+  border: 1px solid rgba(231,199,104,0.7);
+  border-radius: 12px;
+  padding: 9px 18px;
+  text-shadow: none;
+  box-shadow: 0 4px 12px -4px rgba(231,199,104,0.5);
+}
+.driver-popover-footer button.driver-popover-prev-btn {
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  border-color: rgba(255,255,255,0.18);
+  box-shadow: none;
+}
+.driver-popover-footer button:hover { filter: brightness(1.08); }
+.driver-popover-arrow-side-left.driver-popover-arrow   { border-left-color: #265582; }
+.driver-popover-arrow-side-right.driver-popover-arrow  { border-right-color: #17344F; }
+.driver-popover-arrow-side-top.driver-popover-arrow    { border-top-color: #265582; }
+.driver-popover-arrow-side-bottom.driver-popover-arrow { border-bottom-color: #17344F; }
+
+/* Свечение вокруг подсвеченного целевого элемента */
+.driver-active-element,
+.driver-active-element * {
+  pointer-events: auto;
+}
+/* Меньше размытия фона — было слишком «размазано», цель плохо читалась. */
+.driver-overlay { backdrop-filter: none; }
+/* Чёткая золотая стрелка от поповера к подсвеченному элементу. */
+.driver-popover-arrow {
+  border-width: 14px !important;
+  filter: drop-shadow(0 0 6px rgba(231,199,104,0.55));
+}
+.driver-popover-arrow-side-left.driver-popover-arrow   { border-left-color:   #E7C768 !important; }
+.driver-popover-arrow-side-right.driver-popover-arrow  { border-right-color:  #E7C768 !important; }
+.driver-popover-arrow-side-top.driver-popover-arrow    { border-top-color:    #E7C768 !important; }
+.driver-popover-arrow-side-bottom.driver-popover-arrow { border-bottom-color: #E7C768 !important; }
+/* Пульсирующая золотая обводка вокруг подсвеченной зоны */
+@keyframes rrTourPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(231,199,104,0.75), 0 0 36px 10px rgba(231,199,104,0.55); }
+  50%      { box-shadow: 0 0 0 6px rgba(231,199,104,1),    0 0 56px 16px rgba(231,199,104,0.85); }
+}
+.driver-active-element {
+  border-radius: 14px;
+  animation: rrTourPulse 1.6s ease-in-out infinite;
+}
+
+:root {
+  --landing-icon-color: #E7C768;
+}
+
+/* Gold scrollbar on transparent background for lists, modals, drawers & containers */
+.demo-gold-scrollbar,
+.custom-scrollbar,
+.custom-gold-scrollbar,
+.mini-gold-scrollbar,
+.scrollbar-thin {
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--landing-icon-color, #E7C768) transparent !important;
+}
+
+.demo-gold-scrollbar::-webkit-scrollbar,
+.custom-scrollbar::-webkit-scrollbar,
+.custom-gold-scrollbar::-webkit-scrollbar,
+.mini-gold-scrollbar::-webkit-scrollbar,
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px !important;
+  height: 6px !important;
+}
+
+.demo-gold-scrollbar::-webkit-scrollbar-track,
+.custom-scrollbar::-webkit-scrollbar-track,
+.custom-gold-scrollbar::-webkit-scrollbar-track,
+.mini-gold-scrollbar::-webkit-scrollbar-track,
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.demo-gold-scrollbar::-webkit-scrollbar-thumb,
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.custom-gold-scrollbar::-webkit-scrollbar-thumb,
+.mini-gold-scrollbar::-webkit-scrollbar-thumb,
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--landing-icon-color, #E7C768) !important;
+  border-radius: 9999px !important;
+}
+
+.demo-gold-scrollbar::-webkit-scrollbar-thumb:hover,
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.custom-gold-scrollbar::-webkit-scrollbar-thumb:hover,
+.mini-gold-scrollbar::-webkit-scrollbar-thumb:hover,
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--landing-icon-color, #E7C768) !important;
+  filter: brightness(1.2) !important;
+}
+

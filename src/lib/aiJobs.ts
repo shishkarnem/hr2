@@ -1,0 +1,387 @@
+/**
+ * Generic frontend client for the new async AI-job architecture.
+ *
+ * Phase 3B-2A scope: wired ONLY to ai-interview-screen-resume-v2. Checklist
+ * and situations continue to use the old synchronous path until Phase 3B-2B.
+ *
+ * Responsibilities:
+ *   - mint a stable request_id (crypto.randomUUID) per logical user action
+ *   - start the edge function and remember the active job in localStorage
+ *   - poll get_ai_job_safe_status until terminal
+ *   - restore an active job on page reload (no duplicate start, no re-charge)
+ *   - re-poll immediately on focus / visibilitychange
+ *
+ * What we DO NOT store in localStorage:
+ *   - resume text, AI output, employer report, candidate report,
+ *     prompts, errors, scores. Only {job_id, request_id, candidate_id, created_at}.
+ */
+import { dbClient } from "@/lib/dbClient";
+
+export type AiJobStatus =
+  | "created" | "primary_running" | "primary_failed"
+  | "fallback_available" | "fallback_running"
+  | "primary_succeeded" | "fallback_succeeded"
+  | "save_failed" | "validation_failed" | "fallback_failed"
+  | "fallback_unavailable" | "cancelled" | "timed_out"
+  | "orchestration_failed";
+
+const TERMINAL_STATUSES: string[] = [
+  "primary_succeeded", "fallback_succeeded",
+  "succeeded", "completed", "done", "success", "ok",
+  "save_failed", "validation_failed", "fallback_failed",
+  "fallback_unavailable", "cancelled", "timed_out",
+  "orchestration_failed", "failed", "error",
+];
+const SUCCESS_STATUSES: string[] = [
+  "primary_succeeded", "fallback_succeeded",
+  "succeeded", "completed", "done", "success", "ok",
+];
+
+export function isTerminal(s: string | null | undefined): boolean {
+  return !!s && TERMINAL_STATUSES.includes(String(s).toLowerCase());
+}
+export function isSuccess(s: string | null | undefined): boolean {
+  return !!s && SUCCESS_STATUSES.includes(String(s).toLowerCase());
+}
+
+export type ActiveJobRecord = {
+  job_id: string;
+  request_id: string;
+  candidate_id: string;
+  created_at: string;
+};
+
+export type AiJobKind = "screen_resume" | "checklist_grade" | "situations_grade";
+export type EmployerAiJobKind = "overall_candidate";
+
+export function activeJobKey(kind: AiJobKind, candidateId: string): string {
+  return `rr_active_ai_job:${kind}:${candidateId}`;
+}
+
+export function getActiveJob(kind: AiJobKind, candidateId: string): ActiveJobRecord | null {
+  try {
+    const raw = localStorage.getItem(activeJobKey(kind, candidateId));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as ActiveJobRecord;
+    if (!o?.job_id || !o?.request_id) return null;
+    return o;
+  } catch { return null; }
+}
+
+export function setActiveJob(kind: AiJobKind, rec: ActiveJobRecord): void {
+  try { localStorage.setItem(activeJobKey(kind, rec.candidate_id), JSON.stringify(rec)); }
+  catch { /* ignore quota */ }
+}
+
+export function clearActiveJob(kind: AiJobKind, candidateId: string): void {
+  try { localStorage.removeItem(activeJobKey(kind, candidateId)); } catch { /* ignore */ }
+}
+
+// -----------------------------------------------------------------
+// Employer-side AI job helpers (Phase 4 — overall candidate eval).
+// Employers DO have a database Auth session, so polling uses the
+// `get_ai_job_safe_status` RPC directly. LocalStorage stores ONLY
+// {job_id, request_id, candidate_id, created_at} per the spec.
+// -----------------------------------------------------------------
+export function employerJobKey(kind: EmployerAiJobKind, candidateId: string): string {
+  return `rr_active_ai_job:${kind}:${candidateId}`;
+}
+export function getEmployerActiveJob(kind: EmployerAiJobKind, candidateId: string): ActiveJobRecord | null {
+  try {
+    const raw = localStorage.getItem(employerJobKey(kind, candidateId));
+    if (!raw) return null;
+    const o = JSON.parse(raw) as ActiveJobRecord;
+    if (!o?.job_id || !o?.request_id) return null;
+    return o;
+  } catch { return null; }
+}
+export function setEmployerActiveJob(kind: EmployerAiJobKind, rec: ActiveJobRecord): void {
+  try { localStorage.setItem(employerJobKey(kind, rec.candidate_id), JSON.stringify(rec)); }
+  catch { /* ignore */ }
+}
+export function clearEmployerActiveJob(kind: EmployerAiJobKind, candidateId: string): void {
+  try { localStorage.removeItem(employerJobKey(kind, candidateId)); } catch { /* ignore */ }
+}
+
+/** Start (or reuse) the v2 overall-candidate AI evaluation as employer. */
+export async function startOverallCandidateV2(opts: {
+  candidateId: string;
+  requestId?: string;
+}): Promise<{ job_id: string; status: string; reused: boolean; terminal: boolean; request_id: string }> {
+  const requestId = opts.requestId || crypto.randomUUID();
+  const { data, error } = await dbClient.functions.invoke("ai-evaluate-overall-candidate-v2", {
+    body: { candidate_id: opts.candidateId, request_id: requestId },
+  });
+  const errCode = (data as any)?.error || (error as any)?.message;
+  if (errCode) throw new Error(String(errCode));
+  const d = data as { job_id: string; status: string; reused: boolean; terminal: boolean };
+  if (!d?.job_id) throw new Error("no_job_id");
+  setEmployerActiveJob("overall_candidate", {
+    job_id: d.job_id, request_id: requestId,
+    candidate_id: opts.candidateId,
+    created_at: new Date().toISOString(),
+  });
+  return { ...d, request_id: requestId };
+}
+
+/** Employer-side polling via the RPC. Employer is auth'd. */
+export async function fetchEmployerJobStatus(jobId: string): Promise<JobStatusRow | null> {
+  const { data, error } = await (dbClient as any).rpc("get_ai_job_safe_status", { _job_id: jobId });
+  if (error || !data) return null;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+  return {
+    job_id: row.job_id, job_type: row.job_type, status: row.status,
+    fallback_used: !!row.fallback_used,
+    attempts_count: row.attempts_count || 0,
+    created_at: row.created_at, updated_at: row.updated_at,
+    completed_at: row.completed_at ?? null,
+  };
+}
+
+/** Poll employer-side job until terminal (uses RPC, not the candidate edge). */
+export async function pollEmployerJobUntilTerminal(opts: {
+  jobId: string;
+  signal?: AbortSignal;
+  onTick?: (row: JobStatusRow) => void;
+  maxMs?: number;
+}): Promise<JobStatusRow> {
+  const startedAt = Date.now();
+  const maxMs = opts.maxMs ?? 10 * 60_000;
+  let lastStatus = "";
+  let delay = 2000;
+  const wakeups: Array<() => void> = [];
+  const wake = () => { const f = wakeups.shift(); if (f) f(); };
+  const onFocus = () => wake();
+  const onVis = () => { if (document.visibilityState === "visible") wake(); };
+  window.addEventListener("focus", onFocus);
+  document.addEventListener("visibilitychange", onVis);
+  try {
+    while (true) {
+      if (opts.signal?.aborted) throw new Error("aborted");
+      if (Date.now() - startedAt > maxMs) throw new Error("client_poll_timeout");
+      const row = await fetchEmployerJobStatus(opts.jobId);
+      if (row) {
+        if (row.status !== lastStatus) { lastStatus = row.status; opts.onTick?.(row); }
+        if (isTerminal(row.status)) return row;
+      }
+      await new Promise<void>((resolve) => {
+        const id = setTimeout(resolve, delay);
+        wakeups.push(() => { clearTimeout(id); resolve(); });
+      });
+      delay = Math.min(delay * 1.5, 8000);
+    }
+  } finally {
+    window.removeEventListener("focus", onFocus);
+    document.removeEventListener("visibilitychange", onVis);
+  }
+}
+
+export function getCandidateToken(fallbackCandidateId?: string): string {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem("cand_session") : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.token) return parsed.token;
+    }
+  } catch { /* ignore */ }
+  const candId = fallbackCandidateId || (typeof localStorage !== "undefined" ? localStorage.getItem("cand_session_id") : "") || "guest";
+  const cleanId = String(candId).replace(/^(candidate|cand)/i, "").trim() || "guest";
+  const autoToken = `cand_token_${cleanId}_${Date.now()}`;
+  try {
+    if (typeof localStorage !== "undefined") {
+      const existing = JSON.parse(localStorage.getItem("cand_session") || "{}");
+      const updated = {
+        ...existing,
+        token: autoToken,
+        candidate_id: existing.candidate_id || candId,
+        public_id: existing.public_id || cleanId,
+      };
+      localStorage.setItem("cand_session", JSON.stringify(updated));
+      localStorage.setItem("cand_session_id", `candidate${cleanId}`);
+    }
+  } catch { /* ignore */ }
+  return autoToken;
+}
+
+/**
+ * Start a NEW resume-screen v2 job, or reuse an existing one for the same
+ * request_id. Reusing returns the same job_id without re-charging.
+ */
+export async function startResumeScreenV2(opts: {
+  candidateId: string;
+  resumeText: string;
+  requestId?: string;
+  resumeUrl?: string;
+}): Promise<{ job_id: string; status: string; reused: boolean; terminal: boolean; request_id: string }> {
+  const requestId = opts.requestId || crypto.randomUUID();
+  const token = getCandidateToken(opts.candidateId);
+  const { data, error } = await dbClient.functions.invoke("ai-interview-screen-resume-v2", {
+    body: {
+      request_id: requestId,
+      candidate_id: opts.candidateId,
+      resume_text: opts.resumeText,
+      resume_url: opts.resumeUrl,
+      async_version: 2,
+      candidate_token: token,
+    },
+    headers: { "x-candidate-token": token },
+  });
+  const errCode = (data as any)?.error || (error as any)?.message;
+  if (errCode) throw new Error(String(errCode));
+  const d = data as { job_id: string; status: string; reused: boolean; terminal: boolean };
+  if (!d?.job_id) throw new Error("no_job_id");
+  setActiveJob("screen_resume", {
+    job_id: d.job_id, request_id: requestId,
+    candidate_id: opts.candidateId,
+    created_at: new Date().toISOString(),
+  });
+  return { ...d, request_id: requestId };
+}
+
+/**
+ * Start a NEW checklist-grade v2 job (Phase 3B-2B Step D1) or reuse an
+ * existing one for the same request_id. NEVER stores `answers`, candidate
+ * token, project context or AI output in localStorage — only the minimal
+ * {job_id, request_id, candidate_id, created_at} active-job record.
+ */
+export async function startChecklistGradeV2(opts: {
+  candidateId: string;
+  answers: Record<string, string>;
+  requestId?: string;
+}): Promise<{ job_id: string; status: string; reused: boolean; terminal: boolean; request_id: string }> {
+  const requestId = opts.requestId || crypto.randomUUID();
+  const token = getCandidateToken(opts.candidateId);
+  const { data, error } = await dbClient.functions.invoke("ai-interview-grade-checklist-v2", {
+    body: {
+      request_id: requestId,
+      candidate_id: opts.candidateId,
+      answers: opts.answers,
+      async_version: 2,
+      candidate_token: token,
+    },
+    headers: { "x-candidate-token": token },
+  });
+  const errCode = (data as any)?.error || (error as any)?.message;
+  if (errCode) throw new Error(String(errCode));
+  const d = data as { job_id: string; status: string; reused: boolean; terminal: boolean };
+  if (!d?.job_id) throw new Error("no_job_id");
+  setActiveJob("checklist_grade", {
+    job_id: d.job_id, request_id: requestId,
+    candidate_id: opts.candidateId,
+    created_at: new Date().toISOString(),
+  });
+  return { ...d, request_id: requestId };
+}
+
+/**
+ * Start a NEW situations-grade v2 job (Phase 3B-2B Step D1) or reuse an
+ * existing one for the same request_id. Same localStorage hygiene as
+ * checklist v2 — answers and token live only in the request body.
+ */
+export async function startSituationsGradeV2(opts: {
+  candidateId: string;
+  answers: Record<string, string>;
+  requestId?: string;
+}): Promise<{ job_id: string; status: string; reused: boolean; terminal: boolean; request_id: string }> {
+  const requestId = opts.requestId || crypto.randomUUID();
+  const token = getCandidateToken(opts.candidateId);
+  const { data, error } = await dbClient.functions.invoke("ai-interview-grade-situations-v2", {
+    body: {
+      request_id: requestId,
+      candidate_id: opts.candidateId,
+      answers: opts.answers,
+      async_version: 2,
+      candidate_token: token,
+    },
+    headers: { "x-candidate-token": token },
+  });
+  const errCode = (data as any)?.error || (error as any)?.message;
+  if (errCode) throw new Error(String(errCode));
+  const d = data as { job_id: string; status: string; reused: boolean; terminal: boolean };
+  if (!d?.job_id) throw new Error("no_job_id");
+  setActiveJob("situations_grade", {
+    job_id: d.job_id, request_id: requestId,
+    candidate_id: opts.candidateId,
+    created_at: new Date().toISOString(),
+  });
+  return { ...d, request_id: requestId };
+}
+
+export type JobStatusRow = {
+  job_id: string;
+  job_type: string;
+  status: string;
+  fallback_used: boolean;
+  attempts_count: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+export async function fetchJobStatus(jobId: string, fallbackCandidateId?: string): Promise<JobStatusRow | null> {
+  const token = getCandidateToken(fallbackCandidateId);
+  const { data, error } = await dbClient.functions.invoke(
+    "ai-job-status-candidate-v2",
+    { body: { job_id: jobId }, headers: { "x-candidate-token": token } },
+  );
+  if (error) return null;
+  const d = data as any;
+  if (!d?.ok) return null;
+  return {
+    job_id: d.job_id,
+    job_type: d.job_type,
+    status: d.status,
+    fallback_used: !!d.fallback_used,
+    attempts_count: d.attempts_count || 0,
+    created_at: d.created_at,
+    updated_at: d.updated_at,
+    completed_at: d.finished_at ?? null,
+  };
+}
+
+/**
+ * Poll a job until terminal. Calls onTick(status) on every change. Returns
+ * the final status row. Listens for focus / visibilitychange and forces an
+ * immediate poll on those events. Caller owns the abort signal.
+ */
+export async function pollJobUntilTerminal(opts: {
+  jobId: string;
+  signal?: AbortSignal;
+  onTick?: (row: JobStatusRow) => void;
+  maxMs?: number;
+}): Promise<JobStatusRow> {
+  const startedAt = Date.now();
+  const maxMs = opts.maxMs ?? 10 * 60_000; // 10 min hard cap
+  let lastStatus = "";
+  let delay = 2000;
+  const wakeups: Array<() => void> = [];
+  const wake = () => { const f = wakeups.shift(); if (f) f(); };
+  const onFocus = () => wake();
+  const onVis = () => { if (document.visibilityState === "visible") wake(); };
+  window.addEventListener("focus", onFocus);
+  document.addEventListener("visibilitychange", onVis);
+  try {
+    while (true) {
+      if (opts.signal?.aborted) throw new Error("aborted");
+      if (Date.now() - startedAt > maxMs) throw new Error("client_poll_timeout");
+      const row = await fetchJobStatus(opts.jobId);
+      if (row) {
+        if (row.status !== lastStatus) {
+          lastStatus = row.status;
+          opts.onTick?.(row);
+        }
+        if (isTerminal(row.status)) return row;
+      }
+      // sleep with focus-wakeup
+      await new Promise<void>((resolve) => {
+        const id = setTimeout(resolve, delay);
+        wakeups.push(() => { clearTimeout(id); resolve(); });
+      });
+      delay = Math.min(delay * 1.5, 8000);
+    }
+  } finally {
+    window.removeEventListener("focus", onFocus);
+    document.removeEventListener("visibilitychange", onVis);
+  }
+}
