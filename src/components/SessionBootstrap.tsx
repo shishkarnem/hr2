@@ -96,25 +96,29 @@ export default function SessionBootstrap() {
           }
         } catch { /* ignore */ }
 
-        // 2. signup-bootstrap (once per user per browser)
+        // 2. signup-bootstrap (once per user per browser, only for authenticated employer session)
+        const hasEmpToken = !!(
+          localStorage.getItem("emp_token") || localStorage.getItem("employer_token")
+        );
         const doneKey = `${DONE_KEY}:${userId}`;
         const alreadyDone = !!localStorage.getItem(doneKey);
-        if (!alreadyDone && bootstrappedUserRef.current !== userId) {
+        if (hasEmpToken && !alreadyDone && bootstrappedUserRef.current !== userId) {
           bootstrappedUserRef.current = userId;
           const ref = localStorage.getItem(REF_KEY) || undefined;
           try {
-            await dbClient.functions.invoke("signup-bootstrap", { body: { ref } });
+            const { error } = await dbClient.functions.invoke("signup-bootstrap", { body: { ref } });
+            if (!error) {
+              localStorage.setItem(doneKey, "1");
+              localStorage.removeItem(REF_KEY);
+            }
           } catch (e) {
             console.warn("[signup-bootstrap] failed", e);
-          } finally {
-            localStorage.setItem(doneKey, "1");
-            localStorage.removeItem(REF_KEY);
           }
         }
 
         // 3. Persist offer acceptance if it was flagged at registration.
         try {
-          if (localStorage.getItem("rr_offer_accepted") === "1") {
+          if (hasEmpToken && localStorage.getItem("rr_offer_accepted") === "1") {
             await dbClient.rpc("accept_offer", { _version: "2026-11-17" });
             localStorage.removeItem("rr_offer_accepted");
           }

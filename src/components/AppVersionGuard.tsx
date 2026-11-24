@@ -92,6 +92,9 @@ async function unregisterStaleServiceWorkers() {
     if (!("serviceWorker" in navigator)) return;
     const regs = await navigator.serviceWorker.getRegistrations();
     for (const reg of regs) {
+      const scriptUrl =
+        reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
+      if (scriptUrl.endsWith("/sw.js")) continue;
       try { await reg.unregister(); } catch { /* ignore */ }
     }
   } catch { /* ignore */ }

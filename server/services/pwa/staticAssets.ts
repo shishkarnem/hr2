@@ -40,10 +40,29 @@ export function setStaticAssetHeaders(res: Response, filePath: string): void {
 const DEV_SW_FALLBACK =
   `/* Dev-safe PWA & Web Push Service Worker */\n` +
   `self.addEventListener("install", function () { self.skipWaiting(); });\n` +
-  `self.addEventListener("activate", function (event) { event.waitUntil(self.clients.claim()); });\n` +
+  `self.addEventListener("activate", function (event) {\n` +
+  `  event.waitUntil(\n` +
+  `    Promise.resolve().then(function () {\n` +
+  `      if (self.registration && self.registration.active === self && self.clients && self.clients.claim) {\n` +
+  `        return self.clients.claim();\n` +
+  `      }\n` +
+  `    }).catch(function () {})\n` +
+  `  );\n` +
+  `});\n` +
   `try { importScripts("/push-sw.js"); } catch (e) {}\n`;
 
 const PUSH_SW_FALLBACK = `/* Web Push & Notification Click Service Worker Extension */
+self.addEventListener("activate", function (event) {
+  event.waitUntil(
+    Promise.resolve()
+      .then(function () {
+        if (self.registration && self.registration.active === self && self.clients && self.clients.claim) {
+          return self.clients.claim();
+        }
+      })
+      .catch(function () {})
+  );
+});
 self.addEventListener("push", function (event) {
   let payload = {
     title: "Робот Рекрутер",

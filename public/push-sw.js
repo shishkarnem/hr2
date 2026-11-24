@@ -1,4 +1,16 @@
 /* Web Push & Notification Click Service Worker Extension */
+self.addEventListener("activate", function (event) {
+  event.waitUntil(
+    Promise.resolve()
+      .then(function () {
+        if (self.registration && self.registration.active === self && self.clients && self.clients.claim) {
+          return self.clients.claim();
+        }
+      })
+      .catch(function () {})
+  );
+});
+
 self.addEventListener("push", function (event) {
   let payload = {
     title: "Робот Рекрутер",

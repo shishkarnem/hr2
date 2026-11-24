@@ -817,3 +817,108 @@ employerAuthRouter.post(["/notifications/mark-read", "/notifications/mark_read"]
     res.status(500).json({ error: err.message });
   }
 });
+
+employerAuthRouter.post(["/signup-bootstrap", "/auth/signup-bootstrap"], async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization || (req.headers["x-employer-token"] as string);
+    const token = authHeader ? authHeader.replace(/^Bearer\s+/i, "").trim() : "";
+    if (!token) {
+      return res.status(401).json({ error: "Требуется авторизация работодателя" });
+    }
+
+    const db = await getProTalkDB();
+    const emp = await resolveEmployerByToken(db, token);
+    if (!emp) {
+      return res.status(401).json({ error: "Сессия работодателя недействительна" });
+    }
+
+    const pubId = await ensureEmployerPublicId(db, emp);
+    let referralApplied = false;
+
+    const rawRef = typeof req.body?.ref === "string" ? req.body.ref.trim() : "";
+    if (rawRef && !emp.referrer_id) {
+      const existingReferral = await db
+        .get(
+          "SELECT id FROM referrals_emp WHERE referred_employer_id = ? OR CAST(referred_public_id AS TEXT) = ? LIMIT 1",
+          [emp.id, String(pubId)]
+        )
+        .catch(() => null);
+
+      if (!existingReferral) {
+        const cleanRef = rawRef.replace(/^emp-?/i, "").trim();
+        const referrerObj = await db
+          .get(
+            "SELECT * FROM employers WHERE id = ? OR id = ? OR CAST(public_id AS TEXT) = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+            [rawRef, `emp-${cleanRef}`, cleanRef, `emp${cleanRef}`]
+          )
+          .catch(() => null);
+
+        if (referrerObj && referrerObj.id !== emp.id) {
+          const bound = await db
+            .get(
+              "UPDATE employers SET referrer_id = ?, registered_via = 'referral' WHERE id = ? AND (referrer_id IS NULL OR referrer_id = '') RETURNING id",
+              [referrerObj.id, emp.id]
+            )
+            .catch(() => null);
+
+          if (bound?.id) {
+            const emailNorm = String(emp.email || emp.contact_email || emp.id).trim().toLowerCase();
+            const refBonusAmount = 1000;
+            await db.run("UPDATE employers SET balance = COALESCE(balance, 0) + ? WHERE id = ?", [
+              refBonusAmount,
+              referrerObj.id,
+            ]);
+            await db.run("UPDATE wallets SET units_balance = COALESCE(units_balance, 0) + ? WHERE employer_id = ?", [
+              refBonusAmount,
+              referrerObj.id,
+            ]);
+            await db.run(
+              "INSERT INTO payment_history (id, employer_id, amount_rr, type, note) VALUES (?, ?, ?, ?, ?)",
+              [genId("tx"), referrerObj.id, refBonusAmount, "referral", `Реферальный бонус: за приглашение работодателя ${emailNorm}`]
+            );
+            const refWallet = await db.get("SELECT id FROM wallets WHERE employer_id = ?", [referrerObj.id]);
+            if (refWallet?.id) {
+              await db.run(
+                "INSERT INTO transactions (id, wallet_id, amount_rr, type, type_balance, description, note, ref_table, ref_id) VALUES (?, ?, ?, 'referral', 'referral', ?, ?, ?, ?)",
+                [
+                  genId("tx"),
+                  refWallet.id,
+                  refBonusAmount,
+                  "Реферальный бонус за приглашенного реферала по ссылке",
+                  `Реферальный бонус: +1000 RR за приглашение ${emailNorm}`,
+                  "employers",
+                  referrerObj.id,
+                ]
+              );
+            }
+            await recalculateEmployerBalances(db, referrerObj.id);
+            await db.run(
+              "INSERT INTO referrals_emp (id, referrer_employer_id, referrer_public_id, referred_employer_id, referred_public_id, bonus_units) VALUES (?, ?, ?, ?, ?, ?)",
+              [
+                genId("ref"),
+                referrerObj.id,
+                referrerObj.public_id ? String(referrerObj.public_id) : null,
+                emp.id,
+                pubId,
+                refBonusAmount,
+              ]
+            );
+            referralApplied = true;
+          }
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      ok: true,
+      employerId: emp.id,
+      publicId: pubId,
+      public_id: pubId,
+      referralApplied,
+      alreadyBootstrapped: true,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Ошибка инициализации профиля" });
+  }
+});

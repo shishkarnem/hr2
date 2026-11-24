@@ -122,7 +122,7 @@ export default defineConfig(() => ({
         globPatterns: ["**/*.{js,css,ico,png,svg,jpg,webp,woff2,webmanifest}"],
         navigateFallback: null,
         cleanupOutdatedCaches: true,
-        clientsClaim: true,
+        clientsClaim: false,
         skipWaiting: true,
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         runtimeCaching: [
