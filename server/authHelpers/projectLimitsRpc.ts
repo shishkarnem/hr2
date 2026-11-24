@@ -22,10 +22,21 @@ async function ensureInterviewSystemAndBlocks(db: PgDBWrapper, emp: any, projObj
     ? await db.get("SELECT * FROM companies WHERE LOWER(name) = LOWER(?) LIMIT 1", [projObj.company_name])
     : null;
 
-  const projOwner = await db.get(
-    `SELECT id FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = CAST(? AS TEXT) OR (? IS NOT NULL AND CAST(public_id AS TEXT) = CAST(? AS TEXT)) LIMIT 1`,
-    [projObj.employer_id, projObj.employer_id, projObj.employer_public_id, projObj.employer_public_id]
+  const ownerCandidates = Array.from(
+    new Set(
+      [projObj.employer_id, projObj.employer_public_id]
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean)
+    )
   );
+  let projOwner: any = null;
+  if (ownerCandidates.length > 0) {
+    const conds = ownerCandidates
+      .map(() => `(id = ? OR CAST(public_id AS TEXT) = ?)`)
+      .join(" OR ");
+    const ownerParams = ownerCandidates.flatMap((v) => [v, v]);
+    projOwner = await db.get(`SELECT id FROM employers WHERE ${conds} LIMIT 1`, ownerParams);
+  }
   const forcedCreatedBy = projOwner?.id || emp.id;
 
   const existingSys = await db.get("SELECT * FROM interview_systems WHERE project_id = ? LIMIT 1", [pId]);
@@ -111,7 +122,7 @@ async function ensureInterviewSystemAndBlocks(db: PgDBWrapper, emp: any, projObj
       }
     }
   }
-  await syncTrainingTestsPaymentsAndCabinetStatus(db);
+  void syncTrainingTestsPaymentsAndCabinetStatus(db).catch(() => {});
 }
 
 async function ensureTrainingBlocksAndTests(db: PgDBWrapper, projObj: any) {
@@ -148,7 +159,29 @@ async function ensureTrainingBlocksAndTests(db: PgDBWrapper, projObj: any) {
       );
     }
   }
-  await syncTrainingTestsPaymentsAndCabinetStatus(db);
+  void syncTrainingTestsPaymentsAndCabinetStatus(db).catch(() => {});
+}
+
+const spendInFlightLocks = new Map<string, Promise<void>>();
+const spendRequestCache = new Map<string, { ts: number; status: number; body: any }>();
+
+async function withSpendLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = spendInFlightLocks.get(key) || Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.then(() => next);
+  spendInFlightLocks.set(key, chained);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (spendInFlightLocks.get(key) === chained) {
+      spendInFlightLocks.delete(key);
+    }
+  }
 }
 
 export async function handleProjectAndCompanyRpc(
@@ -250,192 +283,279 @@ export async function handleProjectAndCompanyRpc(
   }
 
   if (method === "spend_fixed" || method === "spend_fixed_for_employer") {
-    const { _project, _item = "landing", _prefer = "credit", _employer_public_id, _employer_id, _allocate_qty } = body;
+    const { _project, _item = "landing", _prefer = "credit", _employer_public_id, _employer_id, _allocate_qty, _request_id } = body;
     const clientIp = (req.headers["x-forwarded-for"] as string) || req.ip || "local";
     await checkRateLimit(`rpc:${method}:${clientIp}`, 60, 60);
     const authHeader = req.headers.authorization || (req.headers["x-employer-token"] as string);
     const token = authHeader ? authHeader.replace("Bearer ", "").trim() : "";
     const currentEmp = token ? employerSessions[token] : null;
     const requestedId = _employer_public_id || _employer_id || body?.public_id || body?.employer_id || currentEmp?.id || currentEmp?.public_id || "100007";
-    const cleanPublic = String(requestedId || "").replace(/^emp/, "");
+    const cleanPublic = String(requestedId || "").replace(/^emp-?/i, "").trim();
 
-    let emp =
-      (await db.get("SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR CAST(public_id AS TEXT) = ? OR id = ?", [
-        requestedId,
-        String(requestedId),
-        cleanPublic,
-        `emp${cleanPublic}`,
-      ])) || (await db.get("SELECT * FROM employers LIMIT 1"));
-    if (!emp) {
-      res.json({ data: null, error: "no_employer" });
-      return true;
-    }
+    const lockKey = `${cleanPublic || requestedId}:${_item}:${String(_project || "")}`;
+    const result = await withSpendLock(lockKey, async () => {
+      if (_request_id) {
+        const now = Date.now();
+        for (const [k, v] of spendRequestCache.entries()) {
+          if (now - v.ts > 5 * 60 * 1000) spendRequestCache.delete(k);
+        }
+        const cached = spendRequestCache.get(`${lockKey}:${String(_request_id)}`);
+        if (cached) return cached;
+      }
 
-    const prices: Record<string, { price: number; col: string; name: string }> = {
-      landing: { price: 500, col: "landing_credits", name: "ИИ-Лендинг вакансии" },
-      landings: { price: 500, col: "landing_credits", name: "ИИ-Лендинг вакансии" },
-      interview_setup: { price: 200, col: "interview_setup_credits", name: "ИИ-Система интервью" },
-      interviewSystems: { price: 200, col: "interview_setup_credits", name: "ИИ-Система интервью" },
-      training_setup: { price: 300, col: "training_setup_credits", name: "ИИ-Система обучения" },
-      trainingSystems: { price: 300, col: "training_setup_credits", name: "ИИ-Система обучения" },
-    };
-    const itemInfo = prices[_item] || prices.landing;
-    const isInterviewSetup = _item === "interview_setup" || _item === "interviewSystems";
-    const isTrainingSetup = _item === "training_setup" || _item === "trainingSystems";
+      let emp =
+        (await db.get(
+          "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR id = ?",
+          [String(requestedId), String(requestedId), cleanPublic, `emp${cleanPublic}`, `emp-${cleanPublic}`]
+        )) || (await db.get("SELECT * FROM employers LIMIT 1"));
+      if (!emp) {
+        return { status: 200, body: { data: null, error: "no_employer" } };
+      }
 
-    const targetProj = _project
-      ? await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? OR slug = ? LIMIT 1", [_project, String(_project), _project])
-      : null;
-    const canonicalProjectId = targetProj ? targetProj.id : _project || "";
+      const prices: Record<string, { price: number; col: string; jsonKey: string; name: string }> = {
+        landing: { price: 500, col: "landing_credits", jsonKey: "landings", name: "ИИ-Лендинг вакансии" },
+        landings: { price: 500, col: "landing_credits", jsonKey: "landings", name: "ИИ-Лендинг вакансии" },
+        interview_setup: { price: 200, col: "interview_setup_credits", jsonKey: "interviewSystems", name: "ИИ-Система интервью" },
+        interviewSystems: { price: 200, col: "interview_setup_credits", jsonKey: "interviewSystems", name: "ИИ-Система интервью" },
+        training_setup: { price: 300, col: "training_setup_credits", jsonKey: "trainingSystems", name: "ИИ-Система обучения" },
+        trainingSystems: { price: 300, col: "training_setup_credits", jsonKey: "trainingSystems", name: "ИИ-Система обучения" },
+      };
+      const itemInfo = prices[_item] || prices.landing;
+      const isInterviewSetup = _item === "interview_setup" || _item === "interviewSystems";
+      const isTrainingSetup = _item === "training_setup" || _item === "trainingSystems";
 
-    const allocatePoolLimitsToVacancy = async () => {
-      if (!targetProj || (!isInterviewSetup && !isTrainingSetup)) return 0;
-      let limitsJson: any = {};
-      try { limitsJson = JSON.parse(emp.limits_json || "{}"); } catch {}
-      const poolCol = isInterviewSetup ? "interview_credits" : "training_credits";
-      const poolJsonKey = isInterviewSetup ? "interviews" : "trainings";
+      const targetProj = _project
+        ? await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? OR slug = ? LIMIT 1", [_project, String(_project), _project])
+        : null;
+      const canonicalProjectId = targetProj ? targetProj.id : _project || "";
+
+      const poolCol = isInterviewSetup ? "interview_credits" : isTrainingSetup ? "training_credits" : "";
+      const poolJsonKey = isInterviewSetup ? "interviews" : isTrainingSetup ? "trainings" : "";
       const projLimitCol = isInterviewSetup ? "interview_limit" : "training_limit";
       const projMaxCol = isInterviewSetup ? "max_interviews" : "max_trainings";
       const projUsedCol = isInterviewSetup ? "interview_used" : "training_used";
 
-      const empPool = Math.max(0, Number(emp[poolCol] ?? limitsJson[poolJsonKey] ?? 0));
-      const curLimit = Math.max(0, Number(targetProj[projLimitCol] ?? targetProj[projMaxCol] ?? 0));
-      const curUsed = Math.max(0, Number(targetProj[projUsedCol] ?? 0));
-      const curRemaining = Math.max(0, curLimit - curUsed);
+      let limitsJson: Record<string, any> = {};
+      try { limitsJson = JSON.parse(emp.limits_json || "{}"); } catch {}
+
+      const empPool = poolCol ? Math.max(0, Number(emp[poolCol] ?? limitsJson[poolJsonKey] ?? 0)) : 0;
+      const curVacLimit = targetProj ? Math.max(0, Number(targetProj[projLimitCol] ?? targetProj[projMaxCol] ?? 0)) : 0;
+      const curVacUsed = targetProj ? Math.max(0, Number(targetProj[projUsedCol] ?? 0)) : 0;
+      const curVacRemaining = Math.max(0, curVacLimit - curVacUsed);
       const requestedAlloc =
-        _allocate_qty !== undefined ? Math.max(0, Math.floor(Number(_allocate_qty) || 0)) : curRemaining === 0 && empPool > 0 ? Math.min(10, empPool) : 0;
-      const actualAlloc = Math.min(requestedAlloc, empPool);
+        targetProj && (isInterviewSetup || isTrainingSetup)
+          ? _allocate_qty !== undefined
+            ? Math.max(0, Math.floor(Number(_allocate_qty) || 0))
+            : curVacRemaining === 0 && empPool > 0
+            ? Math.min(10, empPool)
+            : 0
+          : 0;
 
-      if (actualAlloc > 0) {
-        const nextPool = Math.max(0, empPool - actualAlloc);
-        const nextVacLimit = curLimit + actualAlloc;
-        limitsJson[poolJsonKey] = nextPool;
-        await db.run(`UPDATE employers SET ${poolCol} = ?, limits_json = ?, updated_at = NOW() WHERE id = ?`, [
-          nextPool,
-          JSON.stringify(limitsJson),
-          emp.id,
-        ]);
-        await db.run(`UPDATE projects SET ${projLimitCol} = ?, ${projMaxCol} = ?, updated_at = NOW() WHERE id = ?`, [
-          nextVacLimit,
-          nextVacLimit,
-          targetProj.id,
-        ]);
-        emp[poolCol] = nextPool;
-        targetProj[projLimitCol] = nextVacLimit;
+      if (requestedAlloc > empPool) {
+        return {
+          status: 400,
+          body: {
+            error: "not_enough_pool",
+            message: `На общем балансе компании недостаточно лимитов (запрошено ${requestedAlloc}, доступно ${empPool})`,
+          },
+        };
       }
-      return actualAlloc;
-    };
 
-    if (isInterviewSetup && canonicalProjectId) {
-      const alreadySys = await db.get("SELECT * FROM interview_systems WHERE project_id = ? LIMIT 1", [canonicalProjectId]);
-      if (alreadySys) {
-        const allocated = await allocatePoolLimitsToVacancy();
-        if (targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_already");
-        res.json({ ok: true, already: true, allocated_limits: allocated });
-        return true;
+      const applyPoolAndSetupUpdate = async (nextSetupCredits?: number, nextBalance?: number) => {
+        const nextPool = Math.max(0, empPool - requestedAlloc);
+        if (requestedAlloc > 0 && targetProj && poolCol) {
+          const nextVacLimit = curVacLimit + requestedAlloc;
+          limitsJson[poolJsonKey] = nextPool;
+          await db.run(`UPDATE projects SET ${projLimitCol} = ?, ${projMaxCol} = ?, updated_at = NOW() WHERE id = ?`, [
+            nextVacLimit,
+            nextVacLimit,
+            targetProj.id,
+          ]);
+          targetProj[projLimitCol] = nextVacLimit;
+        }
+        const setParts: string[] = ["updated_at = NOW()"];
+        const setParams: any[] = [];
+        if (requestedAlloc > 0 && poolCol) {
+          setParts.push(`${poolCol} = ?`);
+          setParams.push(nextPool);
+          limitsJson[poolJsonKey] = nextPool;
+        }
+        if (nextSetupCredits !== undefined && ALLOWED_LIMIT_COLS.has(itemInfo.col)) {
+          setParts.push(`${itemInfo.col} = ?`);
+          setParams.push(nextSetupCredits);
+          limitsJson[itemInfo.jsonKey] = nextSetupCredits;
+          delete limitsJson[itemInfo.col];
+        }
+        if (nextBalance !== undefined) {
+          setParts.push("balance = ?");
+          setParams.push(nextBalance);
+        }
+        if (setParts.length > 1) {
+          setParts.push("limits_json = ?");
+          setParams.push(JSON.stringify(limitsJson));
+          setParams.push(emp.id);
+          await db.run(`UPDATE employers SET ${setParts.join(", ")} WHERE id = ?`, setParams);
+        }
+        return requestedAlloc;
+      };
+
+      const idemKey = canonicalProjectId ? `fixed:${isInterviewSetup ? "interview_setup" : isTrainingSetup ? "training_setup" : _item}:${canonicalProjectId}` : "";
+      const existingTx = idemKey
+        ? await db.get("SELECT id FROM transactions WHERE idem_key = ? LIMIT 1", [idemKey])
+        : null;
+
+      if (isInterviewSetup && canonicalProjectId) {
+        const alreadySys = await db.get("SELECT * FROM interview_systems WHERE project_id = ? LIMIT 1", [canonicalProjectId]);
+        if (alreadySys || existingTx) {
+          const allocated = await applyPoolAndSetupUpdate();
+          if (targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_already");
+          const resp = { status: 200, body: { ok: true, already: true, allocated_limits: allocated, project_id: canonicalProjectId } };
+          if (_request_id) spendRequestCache.set(`${lockKey}:${String(_request_id)}`, { ts: Date.now(), ...resp });
+          return resp;
+        }
       }
-    }
-    if (isTrainingSetup && canonicalProjectId) {
-      const existingTBlocks = await db.all("SELECT id FROM training_blocks WHERE project_id = ? AND stage IN ('professional', 'product', 'system')", [canonicalProjectId]);
-      if ((existingTBlocks || []).length >= 3) {
-        const allocated = await allocatePoolLimitsToVacancy();
-        if (targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
-        res.json({ ok: true, already: true, allocated_limits: allocated });
-        return true;
+      if (isTrainingSetup && canonicalProjectId) {
+        const existingTBlocks = await db.all(
+          "SELECT id FROM training_blocks WHERE project_id = ? AND stage IN ('professional', 'product', 'system')",
+          [canonicalProjectId]
+        );
+        if ((existingTBlocks || []).length >= 3 || existingTx) {
+          const allocated = await applyPoolAndSetupUpdate();
+          if (targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
+          const resp = { status: 200, body: { ok: true, already: true, allocated_limits: allocated, project_id: canonicalProjectId } };
+          if (_request_id) spendRequestCache.set(`${lockKey}:${String(_request_id)}`, { ts: Date.now(), ...resp });
+          return resp;
+        }
       }
-    }
 
-    const userCredits = Number(emp[itemInfo.col] || 0);
-    const currentBal = Number(emp.balance || 0);
-    const poolColName = isInterviewSetup ? "interview_credits" : isTrainingSetup ? "training_credits" : "";
-    const availablePool = poolColName ? Math.max(0, Number(emp[poolColName] || 0)) : 0;
-    const vacRem = targetProj
-      ? Math.max(
-          0,
-          Number(isInterviewSetup ? targetProj.interview_limit ?? targetProj.max_interviews ?? 0 : targetProj.training_limit ?? targetProj.max_trainings ?? 0) -
-            Number(isInterviewSetup ? targetProj.interview_used ?? 0 : targetProj.training_used ?? 0)
-        )
-      : 0;
+      const userCredits = Number(emp[itemInfo.col] || 0);
+      const currentBal = Number(emp.balance || 0);
 
-    if (_prefer !== "balance" && userCredits > 0 && ALLOWED_LIMIT_COLS.has(itemInfo.col)) {
-      const newCredits = userCredits - 1;
-      let limits: Record<string, any> = {};
-      try { limits = JSON.parse(emp.limits_json || "{}"); } catch {}
-      limits[itemInfo.col] = newCredits;
-      await db.run(`UPDATE employers SET ${itemInfo.col} = ?, limits_json = ? WHERE id = ?`, [newCredits, JSON.stringify(limits), emp.id]);
+      if (_prefer !== "balance" && userCredits > 0 && ALLOWED_LIMIT_COLS.has(itemInfo.col)) {
+        const newCredits = userCredits - 1;
+        const allocated = await applyPoolAndSetupUpdate(newCredits, undefined);
 
-      const allocated = await allocatePoolLimitsToVacancy();
+        if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_credit");
+        else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
+
+        let wallet = await db.get("SELECT * FROM wallets WHERE employer_id = ?", [emp.id]);
+        if (!wallet) {
+          const walletId = genId("wall");
+          await db.run("INSERT INTO wallets (id, employer_id, units_balance) VALUES (?, ?, ?)", [walletId, emp.id, currentBal]);
+          wallet = { id: walletId };
+        }
+        const note = `Списание 1 лимита: «${itemInfo.name}»`;
+        await db.run(
+          `INSERT INTO transactions (id, wallet_id, amount_rr, amount_limits, type_limits, type, type_balance, description, note, ref_table, ref_id, idem_key, created_at)
+           VALUES (?, ?, 0, -1, ?, 'spend_fixed_credit', 'limits', ?, ?, 'projects', ?, ?, NOW())`,
+          [genId("tx"), wallet.id, itemInfo.col, note, note, canonicalProjectId, idemKey || `fixed:${_item}:${canonicalProjectId}`]
+        );
+        const resp = {
+          status: 200,
+          body: { ok: true, used_credit: true, left: newCredits, allocated_limits: allocated, project_id: canonicalProjectId },
+        };
+        if (_request_id) spendRequestCache.set(`${lockKey}:${String(_request_id)}`, { ts: Date.now(), ...resp });
+        return resp;
+      }
+
+      if (_prefer === "pool" && (empPool > 0 || curVacRemaining > 0)) {
+        const allocated = await applyPoolAndSetupUpdate();
+        if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_pool");
+        else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
+        const resp = {
+          status: 200,
+          body: { ok: true, used_credit: true, allocated_limits: allocated, project_id: canonicalProjectId },
+        };
+        if (_request_id) spendRequestCache.set(`${lockKey}:${String(_request_id)}`, { ts: Date.now(), ...resp });
+        return resp;
+      }
+
+      if (currentBal < itemInfo.price) {
+        return { status: 400, body: { error: "insufficient_funds", message: "Недостаточно RR на балансе" } };
+      }
+
+      const newBal = currentBal - itemInfo.price;
+      const allocated = await applyPoolAndSetupUpdate(undefined, newBal);
+
+      if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_balance");
+      else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
+
       let wallet = await db.get("SELECT * FROM wallets WHERE employer_id = ?", [emp.id]);
-      if (!wallet) {
+      if (wallet) await db.run("UPDATE wallets SET units_balance = ?, updated_at = NOW() WHERE id = ?", [newBal, wallet.id]);
+      else {
         const walletId = genId("wall");
-        await db.run("INSERT INTO wallets (id, employer_id, units_balance) VALUES (?, ?, ?)", [walletId, emp.id, currentBal]);
+        await db.run("INSERT INTO wallets (id, employer_id, units_balance) VALUES (?, ?, ?)", [walletId, emp.id, newBal]);
         wallet = { id: walletId };
       }
-      const note = `Списание 1 лимита: «${itemInfo.name}»`;
+
+      const note = `Оплата услуги: «${itemInfo.name}» (${itemInfo.price} RR)`;
       await db.run(
-        `INSERT INTO transactions (id, wallet_id, amount_rr, amount_limits, type_limits, type, type_balance, description, note, ref_table, ref_id, idem_key, created_at)
-         VALUES (?, ?, 0, -1, ?, 'spend_fixed_credit', 'limits', ?, ?, 'projects', ?, ?, NOW())`,
-        [genId("tx"), wallet.id, itemInfo.col, note, note, canonicalProjectId, `fixed:${_item}:${canonicalProjectId}`]
+        `INSERT INTO transactions (id, wallet_id, amount_rr, type, type_balance, description, note, ref_table, ref_id, idem_key, created_at)
+         VALUES (?, ?, ?, 'spend_fixed_balance', 'limits', ?, ?, 'projects', ?, ?, NOW())`,
+        [genId("tx"), wallet.id, itemInfo.price, note, note, canonicalProjectId, idemKey || `fixed:${_item}:${canonicalProjectId}`]
       );
-      if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_credit");
-      else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
-      res.json({ ok: true, used_credit: true, left: newCredits, allocated_limits: allocated, project_id: canonicalProjectId });
-      return true;
-    }
+      await recalculateEmployerBalances(db, emp.id);
 
-    if (_prefer === "pool" && (availablePool > 0 || vacRem > 0)) {
-      const allocated = await allocatePoolLimitsToVacancy();
-      if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_pool");
-      else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
-      res.json({ ok: true, used_credit: true, allocated_limits: allocated, project_id: canonicalProjectId });
-      return true;
-    }
+      try {
+        const { checkEmployerLowBalanceRR, checkEmployerLowGeneralLimits } = await import(
+          "../services/notifications/lowBalanceNotifier"
+        );
+        await checkEmployerLowBalanceRR(db, emp.id, currentBal);
+        if (allocated > 0) {
+          await checkEmployerLowGeneralLimits(db, emp.id);
+        }
+      } catch {}
 
-    if (currentBal < itemInfo.price) {
-      res.status(400).json({ error: "insufficient_funds", message: "Недостаточно RR на балансе" });
-      return true;
-    }
+      const resp = {
+        status: 200,
+        body: { ok: true, amount: itemInfo.price, used_credit: false, allocated_limits: allocated, project_id: canonicalProjectId },
+      };
+      if (_request_id) spendRequestCache.set(`${lockKey}:${String(_request_id)}`, { ts: Date.now(), ...resp });
+      return resp;
+    });
 
-    const newBal = currentBal - itemInfo.price;
-    await db.run("UPDATE employers SET balance = ? WHERE id = ?", [newBal, emp.id]);
-    const allocated = await allocatePoolLimitsToVacancy();
-
-    let wallet = await db.get("SELECT * FROM wallets WHERE employer_id = ?", [emp.id]);
-    if (wallet) await db.run("UPDATE wallets SET units_balance = ?, updated_at = NOW() WHERE id = ?", [newBal, wallet.id]);
-    else {
-      const walletId = genId("wall");
-      await db.run("INSERT INTO wallets (id, employer_id, units_balance) VALUES (?, ?, ?)", [walletId, emp.id, newBal]);
-      wallet = { id: walletId };
-    }
-
-    const note = `Оплата услуги: «${itemInfo.name}» (${itemInfo.price} RR)`;
-    await db.run(
-      `INSERT INTO transactions (id, wallet_id, amount_rr, type, type_balance, description, note, ref_table, ref_id, idem_key, created_at)
-       VALUES (?, ?, ?, 'spend_fixed_balance', 'limits', ?, ?, 'projects', ?, ?, NOW())`,
-      [genId("tx"), wallet.id, itemInfo.price, note, note, canonicalProjectId, `fixed:${_item}:${canonicalProjectId}`]
-    );
-    await recalculateEmployerBalances(db, emp.id);
-    if (isInterviewSetup && targetProj) await ensureInterviewSystemAndBlocks(db, emp, targetProj, "spend_fixed_balance");
-    else if (isTrainingSetup && targetProj) await ensureTrainingBlocksAndTests(db, targetProj);
-
-    res.json({ ok: true, amount: itemInfo.price, used_credit: false, allocated_limits: allocated, project_id: canonicalProjectId });
+    res.status(result.status).json(result.body);
     return true;
   }
 
   if (method === "reallocate_project_limits") {
-    const { _project, _new_interview_limit, _new_training_limit } = body;
+    const { _project, _new_interview_limit, _new_training_limit, _employer_id } = body;
     const proj = await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [_project, String(_project)]);
     if (!proj) {
       res.status(404).json({ ok: false, error: "project_not_found" });
       return true;
     }
 
-    const emp =
-      (await db.get("SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
-        proj.employer_id,
-        String(proj.employer_id || ""),
-        String(proj.employer_public_id || ""),
-      ])) || (await db.get("SELECT * FROM employers LIMIT 1"));
+    let emp: any = null;
+    if (_employer_id) {
+      const cleanReq = String(_employer_id).replace(/^emp-?/i, "").trim();
+      emp = await db.get(
+        "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+        [_employer_id, String(_employer_id), `emp-${cleanReq}`, cleanReq]
+      );
+    }
+    if (!emp && proj.company_id) {
+      const comp = await db.get(
+        "SELECT owner_employer_id, employer_id FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+        [proj.company_id, String(proj.company_id)]
+      );
+      const ownerTarget = comp?.owner_employer_id || comp?.employer_id;
+      if (ownerTarget) {
+        const cleanOwner = String(ownerTarget).replace(/^emp-?/i, "").trim();
+        emp = await db.get(
+          "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+          [ownerTarget, String(ownerTarget), `emp-${cleanOwner}`, cleanOwner]
+        );
+      }
+    }
+    if (!emp) {
+      emp =
+        (await db.get("SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
+          proj.employer_id,
+          String(proj.employer_id || ""),
+          String(proj.employer_public_id || ""),
+        ])) || (await db.get("SELECT * FROM employers LIMIT 1"));
+    }
     if (!emp) {
       res.status(404).json({ ok: false, error: "employer_not_found" });
       return true;
@@ -479,6 +599,13 @@ export async function handleProjectAndCompanyRpc(
       nextTLim,
       proj.id,
     ]);
+    try {
+      const { checkEmployerLowGeneralLimits, checkVacancyLowLimits } = await import(
+        "../services/notifications/lowBalanceNotifier"
+      );
+      await checkEmployerLowGeneralLimits(db, emp.id, poolI + poolT);
+      await checkVacancyLowLimits(db, proj.id, emp.id);
+    } catch {}
     res.json({ ok: true, interviewPool: updatedPoolI, trainingPool: updatedPoolT });
     return true;
   }
@@ -524,10 +651,15 @@ export async function handleProjectAndCompanyRpc(
           targetProjKey,
         ])
       : null;
-    const emp = proj
-      ? (await db.get("SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [proj.employer_id, String(proj.employer_id || "")])) ||
-        (await db.get("SELECT * FROM employers LIMIT 1"))
-      : await db.get("SELECT * FROM employers LIMIT 1");
+    const { resolveVacancyResponsibleEmployers, formatResponsibleContacts } = await import(
+      "../services/notifications/vacancyResponsiblesResolver"
+    );
+    const resolvedResponsibles = proj ? await resolveVacancyResponsibleEmployers(db, proj) : [];
+    const emp = resolvedResponsibles[0]?.empRow || (await db.get("SELECT * FROM employers LIMIT 1"));
+    const { primary, list: contactsList } = formatResponsibleContacts(
+      resolvedResponsibles,
+      proj?.company_name || emp?.company_name || "Компания"
+    );
 
     const hasPassedScreening = Boolean(
       cand?.interview_charged_at ||
@@ -553,10 +685,12 @@ export async function handleProjectAndCompanyRpc(
     }
 
     const empContacts = {
-      name: emp?.name || emp?.contact_name || "Работодатель",
+      name: primary.name || emp?.name || emp?.contact_name || "Работодатель",
       companyName: emp?.company_name || proj?.company_name || "Компания",
-      phone: emp?.phone || emp?.contact_phone || "",
-      email: emp?.email || emp?.contact_email || "",
+      phone: primary.phone || emp?.phone || emp?.contact_phone || "",
+      email: primary.email || emp?.email || emp?.contact_email || "",
+      telegram: primary.telegram || "",
+      contacts: contactsList,
     };
 
     if (method === "can_start_interview") {
@@ -579,11 +713,19 @@ export async function handleProjectAndCompanyRpc(
     if (_kind === "training" && cand && !cand.training_charged_at && proj) {
       await db.run("UPDATE projects SET training_used = COALESCE(training_used, 0) + 1, updated_at = NOW() WHERE id = ?", [proj.id]);
       await db.run("UPDATE candidates SET training_charged_at = NOW() WHERE id = ?", [cand.id]);
+      try {
+        const { checkVacancyLowLimits } = await import("../services/notifications/lowBalanceNotifier");
+        await checkVacancyLowLimits(db, proj.id);
+      } catch {}
       res.json({ data: { ok: true, charged: true }, error: null });
       return true;
     } else if (_kind !== "training" && cand && !cand.interview_charged_at && proj) {
       await db.run("UPDATE projects SET interview_used = COALESCE(interview_used, 0) + 1, updated_at = NOW() WHERE id = ?", [proj.id]);
       await db.run("UPDATE candidates SET interview_charged_at = NOW() WHERE id = ?", [cand.id]);
+      try {
+        const { checkVacancyLowLimits } = await import("../services/notifications/lowBalanceNotifier");
+        await checkVacancyLowLimits(db, proj.id);
+      } catch {}
       res.json({ data: { ok: true, charged: true }, error: null });
       return true;
     }

@@ -91,6 +91,7 @@ export async function executeDatabaseBackup(reason = "Автоматически
       fileBuffer: zipBuffer,
       filename: zipFilename,
       caption,
+      button: { text: "🛠 Открыть админ-панель", url: "/admin" },
     });
 
     if (!result.ok) {
@@ -98,6 +99,7 @@ export async function executeDatabaseBackup(reason = "Автоматически
       await sendTelegramMessage({
         chatId: adminId,
         text: `⚠️ <b>Ошибка отправки бэкапа в Telegram!</b>\n${result.error || "Неизвестная ошибка"}`,
+        button: { text: "🛠 Открыть админ-панель", url: "/admin" },
       });
       return {
         success: false,

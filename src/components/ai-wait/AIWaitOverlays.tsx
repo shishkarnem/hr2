@@ -55,15 +55,37 @@ export interface OverlayProps {
   onCancel: () => void;
   onNext: () => void;
   theme?: any;
+  stages?: string[];
+  progressPct?: number | null;
+  progressLabel?: string | null;
+  successMessage?: string;
 }
 
-export const StageProgress: React.FC<{ elapsed: number; accentColor?: string; bodyTextColor?: string }> = ({
+export const StageProgress: React.FC<{
+  elapsed: number;
+  accentColor?: string;
+  bodyTextColor?: string;
+  stages?: string[];
+  progressPct?: number | null;
+  progressLabel?: string | null;
+}> = ({
   elapsed,
   accentColor = "#E7C768",
   bodyTextColor = "#FFFFFF",
+  stages,
+  progressPct,
+  progressLabel,
 }) => {
-  const stageIdx = Math.min(STAGES.length - 1, Math.floor(elapsed / 4));
-  const widthPct = Math.min(90, Math.round(90 * (1 - Math.exp(-elapsed / 18))));
+  const stageList = stages && stages.length > 0 ? stages : STAGES;
+  const hasExplicitPct = typeof progressPct === "number" && !Number.isNaN(progressPct);
+  const widthPct = hasExplicitPct
+    ? Math.max(4, Math.min(100, Math.round(progressPct)))
+    : Math.min(90, Math.round(90 * (1 - Math.exp(-elapsed / 18))));
+  const stageIdx = hasExplicitPct
+    ? Math.min(stageList.length - 1, Math.floor((widthPct / 100) * stageList.length))
+    : Math.min(stageList.length - 1, Math.floor(elapsed / 4));
+  const label = (progressLabel && progressLabel.trim()) || stageList[stageIdx] || "Обработка";
+
   return (
     <div className="relative z-10 mt-4 space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -72,13 +94,13 @@ export const StageProgress: React.FC<{ elapsed: number; accentColor?: string; bo
           style={{ color: bodyTextColor }}
           aria-live="polite"
         >
-          {STAGES[stageIdx]}…
+          {label}…
         </div>
         <div
           className="text-sm font-mono tabular-nums shrink-0 opacity-85"
           style={{ color: bodyTextColor }}
         >
-          {elapsed}s
+          {hasExplicitPct ? `${widthPct}%` : `${elapsed}s`}
         </div>
       </div>
       <div
@@ -86,10 +108,11 @@ export const StageProgress: React.FC<{ elapsed: number; accentColor?: string; bo
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
+        aria-valuenow={widthPct}
         aria-label="Идёт обработка"
       >
         <div
-          className="h-full rounded-full transition-[width] duration-700 ease-out"
+          className="h-full rounded-full transition-[width] duration-500 ease-out"
           style={{
             width: `${widthPct}%`,
             background: `linear-gradient(to right, ${accentColor}, #FFFFFF, ${accentColor})`,
@@ -98,7 +121,7 @@ export const StageProgress: React.FC<{ elapsed: number; accentColor?: string; bo
         <div className="pointer-events-none absolute inset-0 -translate-x-full animate-[aiwait-shimmer_2.4s_linear_infinite] bg-gradient-to-r from-transparent via-white/30 to-transparent" />
       </div>
       <div className="flex items-center justify-between gap-1.5">
-        {STAGES.map((_, i) => (
+        {stageList.map((_, i) => (
           <span
             key={i}
             aria-hidden
@@ -132,6 +155,10 @@ export const Overlay: React.FC<OverlayProps> = ({
   onCancel,
   onNext,
   theme: propTheme,
+  stages,
+  progressPct,
+  progressLabel,
+  successMessage,
 }) => {
   const theme = getActiveCompanyTheme(propTheme);
   const hasCompanyTheme = Boolean(theme && typeof theme === "object" && Object.keys(theme).length > 0);
@@ -141,7 +168,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     status === "loading"
       ? phrase
       : status === "success"
-      ? "Готово! Ответ получен"
+      ? (successMessage || "Готово! Ответ получен")
       : "Не удалось завершить проверку…";
   const typed = useTypewriter(bubbleText, 90);
 
@@ -345,7 +372,14 @@ export const Overlay: React.FC<OverlayProps> = ({
         </div>
 
         {status === "loading" && (
-          <StageProgress elapsed={elapsed} accentColor={accentColor} bodyTextColor={bodyTextColor} />
+          <StageProgress
+            elapsed={elapsed}
+            accentColor={accentColor}
+            bodyTextColor={bodyTextColor}
+            stages={stages}
+            progressPct={progressPct}
+            progressLabel={progressLabel}
+          />
         )}
 
         {status === "success" && !autoCloseOnSuccess && (

@@ -41,6 +41,7 @@ export async function sendTelegramApiMessage(options: {
   apiBaseUrl?: string;
   secondaryApiBaseUrl?: string;
   replyMarkup?: any;
+  button?: { text: string; url: string };
   timeoutMs?: number;
 }) {
   const token = options.botToken || process.env.TELEGRAM_BOT_TOKEN;
@@ -49,6 +50,32 @@ export async function sendTelegramApiMessage(options: {
   const timeoutMs = options.timeoutMs || 10000;
 
   if (!token) return { ok: false, description: "Токен бота не задан" };
+
+  const rawApp = String(process.env.APP_URL || process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+  const baseApp = !rawApp || /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(rawApp)
+    ? "https://hr-rr.ru"
+    : /^https?:\/\//i.test(rawApp)
+    ? rawApp
+    : `https://${rawApp}`;
+  const btnRawUrl = String(options.button?.url || "").trim();
+  const resolvedUrl = !btnRawUrl
+    ? baseApp
+    : /^https?:\/\//i.test(btnRawUrl)
+    ? /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(btnRawUrl)
+      ? baseApp
+      : btnRawUrl
+    : `${baseApp}${btnRawUrl.startsWith("/") ? "" : "/"}${btnRawUrl}`;
+
+  const replyMarkup = options.replyMarkup || {
+    inline_keyboard: [
+      [
+        {
+          text: options.button?.text?.trim() || "🌐 Открыть платформу",
+          url: resolvedUrl,
+        },
+      ],
+    ],
+  };
 
   const urlsToTry = [primaryBaseUrl];
   if (options.secondaryApiBaseUrl) {
@@ -70,7 +97,7 @@ export async function sendTelegramApiMessage(options: {
         body: JSON.stringify({
           chat_id: String(options.chatId),
           text: options.text,
-          reply_markup: options.replyMarkup,
+          reply_markup: replyMarkup,
         }),
         signal: controller.signal,
       });

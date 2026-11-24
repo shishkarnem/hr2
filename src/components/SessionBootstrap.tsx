@@ -115,7 +115,7 @@ export default function SessionBootstrap() {
         // 3. Persist offer acceptance if it was flagged at registration.
         try {
           if (localStorage.getItem("rr_offer_accepted") === "1") {
-            await dbClient.rpc("accept_offer", { _version: "2026-06-06" });
+            await dbClient.rpc("accept_offer", { _version: "2026-11-17" });
             localStorage.removeItem("rr_offer_accepted");
           }
         } catch (e) {

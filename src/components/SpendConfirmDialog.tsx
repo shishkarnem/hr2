@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { X, Coins, Wallet, AlertTriangle, Users2, GraduationCap, Plus, Minus, Sparkles } from "lucide-react";
 import { dbClient } from "@/lib/dbClient";
 import { FIXED_PRICES, formatRR } from "@/lib/rr";
@@ -71,6 +71,8 @@ export default function SpendConfirmDialog({
   const [allocBusy, setAllocBusy] = useState(false);
   const [err, setErr] = useState<string>("");
   const [infoMsg, setInfoMsg] = useState<string>("");
+  const actionLockRef = useRef(false);
+  const requestIdRef = useRef<string>("");
 
   const isInterview = kind === "interview_setup";
   const isTraining = kind === "training_setup";
@@ -142,7 +144,14 @@ export default function SpendConfirmDialog({
     }
     setErr("");
     setInfoMsg("");
-  }, [effectiveProjectId, vacancyInfo.remaining, effectiveCompanyPool, supportsVacancyPool]);
+  }, [effectiveProjectId, supportsVacancyPool]);
+
+  useEffect(() => {
+    requestIdRef.current =
+      typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function"
+        ? (crypto as any).randomUUID()
+        : `req-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }, [open, kind, effectiveProjectId, allocQty]);
 
   if (!open) return null;
 
@@ -154,11 +163,12 @@ export default function SpendConfirmDialog({
   const insufficient = !hasCredit && !hasPoolOrVacancyLimit && !canPayRR && !vacancyInfo.alreadyHasSystem;
 
   const handleAllocateOnly = async () => {
-    if (!selectedProject || allocQty <= 0) return;
+    if (!selectedProject || allocQty <= 0 || actionLockRef.current) return;
     if (allocQty > effectiveCompanyPool) {
       setErr(`Нельзя превысить общий лимит компании (доступно ${effectiveCompanyPool} шт.)`);
       return;
     }
+    actionLockRef.current = true;
     setAllocBusy(true);
     setErr("");
     setInfoMsg("");
@@ -183,8 +193,9 @@ export default function SpendConfirmDialog({
       if (!res.ok || !data?.ok) {
         throw new Error(data?.message || data?.error || "Ошибка распределения лимитов");
       }
-      setInfoMsg(`Выделено +${allocQty} шт. из общего лимита компании для выбранной вакансии.`);
+      const added = allocQty;
       setAllocQty(0);
+      setInfoMsg(`Выделено +${added} шт. Теперь доступно по вакансии: ${vacancyInfo.remaining + added} шт.`);
       if (onLimitsUpdated) await onLimitsUpdated();
     } catch (e: any) {
       const msg = String(e?.message || "Ошибка распределения лимитов");
@@ -196,10 +207,12 @@ export default function SpendConfirmDialog({
       });
     } finally {
       setAllocBusy(false);
+      actionLockRef.current = false;
     }
   };
 
   const handleSpend = async (prefer: "credit" | "pool" | "balance" = "credit") => {
+    if (actionLockRef.current) return;
     if (!effectiveProjectId) {
       setErr("Выберите вакансию из списка");
       return;
@@ -208,6 +221,7 @@ export default function SpendConfirmDialog({
       setErr(`Лимит вакансии не может превышать общий лимит компании (${effectiveCompanyPool} шт.)`);
       return;
     }
+    actionLockRef.current = true;
     setBusy(true);
     setErr("");
     setInfoMsg("");
@@ -220,15 +234,18 @@ export default function SpendConfirmDialog({
             _item: kind,
             _prefer: prefer,
             _allocate_qty: allocQty,
+            _request_id: requestIdRef.current,
           }
         : {
             _project: effectiveProjectId,
             _item: kind,
             _prefer: prefer,
             _allocate_qty: allocQty,
+            _request_id: requestIdRef.current,
           };
       const { data, error } = await dbClient.rpc(rpcName as any, rpcArgs as any);
       if (error) throw new Error(error.message || "Ошибка списания");
+      setAllocQty(0);
       if (onLimitsUpdated) await onLimitsUpdated();
       onConfirmed(effectiveProjectId, (data as any) || { ok: true });
     } catch (e: any) {
@@ -242,6 +259,8 @@ export default function SpendConfirmDialog({
         setErr("Недостаточно средств на балансе. Выделите лимит из общих лимитов компании или пополните счёт.");
       } else if (/insufficient_credits/.test(msg)) {
         setErr("Лимит создания этой услуги исчерпан. Используйте общие лимиты или списание с баланса RR.");
+      } else if (/not_enough_pool/.test(msg)) {
+        setErr("На общем балансе компании недостаточно лимитов для добавления.");
       } else if (/project_employer_mismatch|bad_employer/.test(msg)) {
         setErr("Вакансия не относится к текущему кабинету работодателя. Обновите страницу и попробуйте снова.");
       } else {
@@ -249,6 +268,7 @@ export default function SpendConfirmDialog({
       }
     } finally {
       setBusy(false);
+      actionLockRef.current = false;
     }
   };
 
@@ -382,8 +402,16 @@ export default function SpendConfirmDialog({
                 </span>
               </div>
               <p className="text-sm text-white/85 leading-relaxed">
-                Вы можете перевести лимиты из общего пакета компании ({effectiveCompanyPool} шт.) на вакансию «
-                {selectedProject.roleName}». Сумма по вакансиям не может превышать общий лимит.
+                Сейчас доступно по вакансии «{selectedProject.roleName}»:{" "}
+                <b className="text-white">{vacancyInfo.remaining} шт.</b>
+                {allocQty > 0 ? (
+                  <>
+                    {" "}→ после добавления станет{" "}
+                    <b className="text-[#E7C768]">{vacancyInfo.remaining + allocQty} шт.</b>
+                  </>
+                ) : (
+                  " (вы можете перевести лимиты из общего пакета компании ниже)."
+                )}
               </p>
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <div className="flex items-center gap-1.5">
@@ -414,7 +442,7 @@ export default function SpendConfirmDialog({
                   </button>
                 </div>
 
-                {allocQty > 0 && effectiveCompanyPool > 0 && (
+                {allocQty > 0 && effectiveCompanyPool > 0 && vacancyInfo.alreadyHasSystem && (
                   <button
                     type="button"
                     disabled={busy || allocBusy}
@@ -423,7 +451,7 @@ export default function SpendConfirmDialog({
                   >
                     {allocBusy
                       ? "Переводим…"
-                      : `Перевести +${allocQty} ${kind.startsWith("training") ? "обучений кандидатов" : "интервью кандидатов"} в вакансию`}
+                      : `Перевести +${allocQty} ${kind.startsWith("training") ? "обучений кандидатов" : "интервью кандидатов"} без открытия`}
                   </button>
                 )}
               </div>

@@ -234,6 +234,10 @@ employersRouter.post("/employers/:id/purchase", async (req: Request, res: Respon
   if (db) {
     await saveEmployerToProTalkDB(db, emp);
     await savePaymentToProTalkDB(db, newPayment);
+    try {
+      const { checkEmployerLowBalanceRR } = await import("../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowBalanceRR(db, emp.id, currentBalance);
+    } catch {}
   }
 
   notifyTelegram(emp.telegram_chat_id || emp.telegramId || "emp-demo", `🛍️ Приобретена услуга: "${itemName}" за ${price} RR.`);

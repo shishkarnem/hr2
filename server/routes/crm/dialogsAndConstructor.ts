@@ -1,8 +1,10 @@
 import { Router, Request, Response } from "express";
 import crypto from "crypto";
 import { getProTalkDB } from "../../db";
+import { decisionTemplatesRouter } from "./decisionTemplates";
 
 export const crmRouter = Router();
+crmRouter.use(decisionTemplatesRouter);
 
 crmRouter.get("/crm/dialogs/:employerId", async (req: Request, res: Response) => {
   try {

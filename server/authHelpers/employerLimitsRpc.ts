@@ -173,6 +173,10 @@ export async function handleEmployerReferralAndLimitsRpc(
     const updatedEmp = await db.get("SELECT * FROM employers WHERE id = ?", [emp.id]);
     const changes = [{ field: target.col, label: target.label, from: oldVal, to: valNum, delta }];
     await notifyLimitChangesToTelegram(db, updatedEmp, changes, noteStr);
+    try {
+      const { checkEmployerLowGeneralLimits } = await import("../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowGeneralLimits(db, emp.id);
+    } catch {}
     res.json({ success: true, data: { ok: true, oldVal, newVal: valNum, employer: updatedEmp, changes }, error: null });
     return true;
   }
@@ -245,6 +249,10 @@ export async function handleEmployerReferralAndLimitsRpc(
 
     const updatedEmp = await db.get("SELECT * FROM employers WHERE id = ?", [emp.id]);
     if (changes.length > 0) await notifyLimitChangesToTelegram(db, updatedEmp, changes, noteStr);
+    try {
+      const { checkEmployerLowGeneralLimits } = await import("../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowGeneralLimits(db, emp.id);
+    } catch {}
     res.json({ success: true, data: { ok: true, employer: updatedEmp, changes }, error: null });
     return true;
   }
@@ -280,6 +288,12 @@ export async function handleEmployerReferralAndLimitsRpc(
     );
     await recalculateEmployerBalances(db, emp.id);
     const updatedEmp = await db.get("SELECT * FROM employers WHERE id = ?", [emp.id]);
+    if (deltaNum < 0) {
+      try {
+        const { checkEmployerLowBalanceRR } = await import("../services/notifications/lowBalanceNotifier");
+        await checkEmployerLowBalanceRR(db, emp.id, Number(emp.balance || 0));
+      } catch {}
+    }
     res.json({ success: true, data: { ok: true, balance: updatedEmp?.balance, employer: updatedEmp }, error: null, new_balance: updatedEmp?.balance });
     return true;
   }
@@ -353,6 +367,10 @@ export async function handleEmployerReferralAndLimitsRpc(
     );
     await recalculateEmployerBalances(db, emp.id);
     const updatedEmp = await db.get("SELECT balance FROM employers WHERE id = ?", [emp.id]);
+    try {
+      const { checkEmployerLowBalanceRR } = await import("../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowBalanceRR(db, emp.id, currentBal);
+    } catch {}
     res.json({ data: { ok: true, balance: updatedEmp?.balance ?? newBal, limits }, error: null });
     return true;
   }
@@ -427,6 +445,10 @@ export async function handleEmployerReferralAndLimitsRpc(
     );
     await recalculateEmployerBalances(db, emp.id);
     const updatedEmp = await db.get("SELECT balance FROM employers WHERE id = ?", [emp.id]);
+    try {
+      const { checkEmployerLowBalanceRR } = await import("../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowBalanceRR(db, emp.id, currentBal);
+    } catch {}
     res.json({ data: { ok: true, balance: updatedEmp?.balance ?? newBal, limits }, error: null });
     return true;
   }

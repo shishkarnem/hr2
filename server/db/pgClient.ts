@@ -270,10 +270,11 @@ export function translateQueryToPg(sql: string, rawParams: any[] = []): { sql: s
     }
   }
 
-  // 9. Replace ? with $1, $2, ...
+  // 9. Replace ? with $1, $2, ... (skipping single-quoted SQL string literals)
   const params: any[] = [];
   let pIdx = 1;
-  let convertedSql = s.replace(/\?/g, () => {
+  let convertedSql = s.replace(/'(?:''|[^'])*'|\?/g, (match) => {
+    if (match !== "?") return match;
     const rawVal = rawParams[pIdx - 1];
     let finalVal = rawVal;
     if (finalVal !== undefined && finalVal !== null && typeof finalVal === "object" && !(finalVal instanceof Date)) {

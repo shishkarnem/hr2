@@ -34,6 +34,13 @@ import { blogRouter } from "./server/routes/blog";
 import { miscRouter } from "./server/routes/public";
 import filesRouter from "./server/routes/files";
 import { teamRouter } from "./server/routes/team";
+import { pushRouter } from "./server/routes/push/pushRoutes";
+import { sitePreviewRouter } from "./server/services/sitePreview/router";
+import {
+  resolveStaticRoots,
+  registerPwaAssetRoutes,
+  registerPublicStaticFallback,
+} from "./server/services/pwa/staticAssets";
 
 export { db };
 
@@ -102,6 +109,8 @@ async function startServer() {
   app.use("/api", blogRouter);
   app.use("/api", miscRouter);
   app.use("/api", teamRouter);
+  app.use("/api", pushRouter);
+  app.use("/api", sitePreviewRouter);
   app.use(filesRouter);
 
   // ==========================================
@@ -334,7 +343,7 @@ async function startServer() {
     let title = "Робот Рекрутер — ИИ-платформа автоматизации найма и собеседований";
     let description = "ИИ-платформа для автоматического подбора персонала, скрининга резюме и проведения 24/7 интерактивных собеседований.";
     let keywords = "ИИ рекрутер, автоматизация найма, подбор персонала, hr рекрутинг, скрининг резюме, онлайн собеседование";
-    let image = "https://hr-rr.online/logos/RR-Logo.png";
+    let image = "https://hr-rr.online/icons/social/og-image.jpg";
     let type = "website";
     let jsonLd: any = null;
     let prerenderedHtml: string = "";
@@ -438,7 +447,7 @@ async function startServer() {
                   url: siteUrl,
                   logo: {
                     "@type": "ImageObject",
-                    url: `${siteUrl}/logos/RR-Logo.png`
+                    url: `${siteUrl}/icons/pwa/pwa-512x512.png`
                   }
                 }
               },
@@ -703,10 +712,14 @@ async function startServer() {
   }
 
   // Serve static files and handle SPA fallback
-  const distPath = path.join(process.cwd(), "dist");
-  const distIndexExists = fs.existsSync(path.join(distPath, "index.html"));
+  const staticRoots = resolveStaticRoots();
+  const distPath = staticRoots.distPath;
+  const distIndexExists = staticRoots.distIndexExists;
   // Prefer the optimized production build (dist/) whenever it is present unless FORCE_VITE_DEV=1 is explicitly set.
   const isDev = process.env.FORCE_VITE_DEV === "1" || !distIndexExists;
+
+  // Ensure /sw.js, /push-sw.js, /manifest.webmanifest, /favicon.ico and /icons/* never return 404
+  registerPwaAssetRoutes(app, staticRoots);
 
   if (isDev) {
     const vite = await createViteServer({
@@ -735,7 +748,7 @@ async function startServer() {
         return next();
       }
       try {
-        const indexPath = path.resolve(process.cwd(), "index.html");
+        const indexPath = path.resolve(staticRoots.projectRoot, "index.html");
         let template = fs.readFileSync(indexPath, "utf-8");
         template = await vite.transformIndexHtml(url, template);
         const meta = await getPageMeta(url, req.headers["user-agent"] as string);
@@ -771,6 +784,7 @@ async function startServer() {
         },
       })
     );
+    registerPublicStaticFallback(app, staticRoots);
     app.get("*", async (req, res, next) => {
       const pathname = (req.originalUrl || req.url || "").split("?")[0];
       if (pathname.startsWith("/api") || pathname.includes(".")) {

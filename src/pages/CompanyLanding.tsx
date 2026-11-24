@@ -1319,7 +1319,7 @@ export default function CompanyLanding() {
                 <div className="landing-hero-filter-layer absolute inset-0 pointer-events-none z-0 rounded-3xl" />
               )}
               {/* Hero — фирменный Apple Liquid Glass */}
-              <div className="relative z-[1] px-[2%] sm:px-6 md:px-10 pt-6 md:pt-10 pb-6 md:pb-8 overflow-hidden">
+              <div className="relative z-[2] px-[2%] sm:px-6 md:px-10 pt-6 md:pt-10 pb-6 md:pb-8 overflow-hidden">
                 <div className="relative flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-4 md:gap-6">
                   <CompanyLandingLogo
                     src={company?.logo_url || selectedVacancy.logoUrl}
@@ -1358,7 +1358,7 @@ export default function CompanyLanding() {
                 </div>
 
                 {/* Terms */}
-                <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
+                <div className="relative z-[1] grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
                   {selectedVacancy.salaryTerms && (
                     <div className="vacancy-subcard flex items-center gap-3 bg-transparent backdrop-blur-xl p-3.5 rounded-2xl border border-white/20 min-w-0">
                       <div
@@ -1389,11 +1389,32 @@ export default function CompanyLanding() {
                   )}
                 </div>
 
-                {displayCompany?.website && (
-                  <div className="relative mt-4">
-                    <SitePreview url={displayCompany.website} variant="compact" themeConfig={effectiveTheme} />
-                  </div>
-                )}
+                {(() => {
+                  let vacSiteUrl = displayCompany?.website || "";
+                  let vacSiteTitle: string | undefined;
+                  if (!vacSiteUrl && displayCompany?.sites) {
+                    try {
+                      const arr = typeof displayCompany.sites === "string" ? JSON.parse(displayCompany.sites) : displayCompany.sites;
+                      if (Array.isArray(arr) && arr.length > 0) {
+                        const first = arr.find((s: any) => s && (typeof s === "string" ? s.trim() : s.url?.trim()));
+                        if (first) {
+                          vacSiteUrl = typeof first === "string" ? first : first.url;
+                          vacSiteTitle = typeof first === "object" ? first.title : undefined;
+                        }
+                      } else if (typeof displayCompany.sites === "string") {
+                        vacSiteUrl = displayCompany.sites;
+                      }
+                    } catch {
+                      if (typeof displayCompany.sites === "string") vacSiteUrl = displayCompany.sites;
+                    }
+                  }
+                  if (!vacSiteUrl) return null;
+                  return (
+                    <div className="relative z-[1] mt-4">
+                      <SitePreview url={vacSiteUrl} title={vacSiteTitle} variant="compact" themeConfig={effectiveTheme} />
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="px-[2%] sm:px-6 md:px-10 py-6 md:py-8 bg-transparent backdrop-blur-xl border-t border-white/20 space-y-5">

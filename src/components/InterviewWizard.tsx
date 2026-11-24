@@ -2047,7 +2047,6 @@ export default function InterviewWizard({
                                             type="button"
                                             onClick={() => {
                                               setPreviewChecklistAnswers((prev) => ({ ...prev, [qId]: opt }));
-                                              shuffleQuestionOptionsInPreview(qId);
                                             }}
                                             className={`px-4 py-2.5 rounded-xl text-sm font-semibold border text-left flex items-center gap-2.5 transition cursor-pointer ${
                                               selected
@@ -2088,7 +2087,6 @@ export default function InterviewWizard({
                                                   ...prev,
                                                   [qId]: nextMulti,
                                                 }));
-                                                shuffleQuestionOptionsInPreview(qId);
                                               }}
                                               className={`px-4 py-2.5 rounded-xl text-sm font-semibold border text-left flex items-center gap-2.5 transition cursor-pointer ${
                                                 checked

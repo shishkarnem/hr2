@@ -3,40 +3,31 @@
  * и в попапе согласия (при регистрации и при оплате).
  */
 import React from "react";
+import { CURRENT_LEGAL_DATE, getCurrentLegalDomain } from "./legal/legalDocsData";
 
-export const OFFER_VERSION = "2026-06-06";
+export const OFFER_VERSION = "2026-11-17";
 
 function Section({ n, title, children }: { n: string; title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-[#1E4468]/70 border border-[#E7C768]/20 rounded-2xl p-5 md:p-6 shadow-lg">
-      <h2 className="text-base md:text-lg font-black text-[#E7C768] mb-3 tracking-tight">
-        <span className="font-mono text-xs text-[#D99E41] mr-2">§ {n}</span>{title}
+    <section className="bg-transparent backdrop-blur-xl border border-[#E7C768]/25 rounded-2xl p-5 md:p-6 shadow-lg">
+      <h2 className="text-base md:text-lg font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent mb-3 tracking-tight">
+        <span className="font-mono text-[14px] text-[#D99E41] mr-2">§ {n}</span>{title}
       </h2>
-      <div className="text-sm text-slate-100/95 leading-relaxed space-y-2">{children}</div>
+      <div className="text-[14px] text-slate-100 leading-relaxed space-y-2">{children}</div>
     </section>
   );
 }
 
 export default function OfferContent() {
-  let currentDomain = "hr-rr.online";
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname.toLowerCase();
-    if (host.includes("hr-rr.ru")) {
-      currentDomain = "hr-rr.ru";
-    } else if (host.includes("hr-rr.online")) {
-      currentDomain = "hr-rr.online";
-    } else if (host) {
-      currentDomain = host;
-    }
-  }
+  const currentDomain = getCurrentLegalDomain();
 
   return (
     <div className="space-y-5">
-      <header className="text-center space-y-2 pb-4 border-b border-white/10">
-        <p className="text-[14px] text-[#E7C768] font-mono">Редакция от 06.06.2026</p>
-        <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight">Публичная оферта</h1>
-        <p className="text-[14px] text-slate-300">о приобретении цифровых единиц RR на платформе {currentDomain}</p>
-        <p className="text-[14px] text-slate-400">г. Москва</p>
+      <header className="text-center space-y-2 pb-4 border-b border-white/15">
+        <p className="text-[14px] text-[#E7C768] font-mono">Редакция от {CURRENT_LEGAL_DATE}</p>
+        <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent tracking-tight">Публичная оферта</h1>
+        <p className="text-[14px] text-slate-200">о приобретении цифровых единиц RR на платформе {currentDomain}</p>
+        <p className="text-[14px] text-slate-300">г. Москва</p>
       </header>
 
       <p className="text-[14px] text-slate-200 leading-relaxed">

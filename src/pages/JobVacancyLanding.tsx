@@ -16,6 +16,7 @@ import Reveal from "@/components/Reveal";
 import AuthModal from "@/components/AuthModal";
 import { useLandingTheme, LandingThemeConfig } from "@/components/LandingStyleEditor";
 import { saveCandidateSession } from "@/lib/candidateSession";
+import LegalConsentBlock from "@/components/legal/LegalConsentBlock";
 import {
   Briefcase,
   DollarSign,
@@ -43,7 +44,7 @@ export default function JobVacancyLanding() {
   // States
   const [project, setProject] = useState<JobProject | null>(null);
   const [loading, setLoading] = useState(true);
-  const [employerContacts, setEmployerContacts] = useState<{ email?: string; phone?: string; telegram?: string } | null>(null);
+  const [employerContactsList, setEmployerContactsList] = useState<Array<{ id?: string; name?: string; roleTitle?: string; email?: string; phone?: string; telegram?: string }>>([]);
   const [companyData, setCompanyData] = useState<any>(null);
 
   // Active theme configuration from company record
@@ -76,6 +77,8 @@ export default function JobVacancyLanding() {
   const [candName, setCandName] = useState("");
   const [candEmail, setCandEmail] = useState("");
   const [candTg, setCandTg] = useState("");
+  const [candidateConsentOk, setCandidateConsentOk] = useState(true);
+  const [applyError, setApplyError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const handleGoToCabinet = () => {
@@ -135,17 +138,23 @@ export default function JobVacancyLanding() {
         (found as any).systemText = row.system_text || undefined;
         setProject(found);
         setCompanyData(row.companies || null);
-        if (row.employer_id) {
-          const { data: emp } = await dbClient
-            .from("employers")
-            .select("contact_email, contact_phone, contact_telegram")
-            .eq("id", row.employer_id)
-            .maybeSingle();
-          if (emp) setEmployerContacts({
-            email: (emp as any).contact_email || undefined,
-            phone: (emp as any).contact_phone || undefined,
-            telegram: (emp as any).contact_telegram || undefined,
+        if (row.id) {
+          const { data: rpcContacts } = await dbClient.rpc("get_vacancy_employer_contacts", {
+            _project_id: row.id,
           });
+          const list = Array.isArray((rpcContacts as any)?.contacts)
+            ? (rpcContacts as any).contacts
+            : (rpcContacts as any)?.email || (rpcContacts as any)?.phone || (rpcContacts as any)?.telegram
+            ? [
+                {
+                  name: (rpcContacts as any).name,
+                  email: (rpcContacts as any).email,
+                  phone: (rpcContacts as any).phone,
+                  telegram: (rpcContacts as any).telegram,
+                },
+              ]
+            : [];
+          setEmployerContactsList(list);
         }
         setMessages([
           {
@@ -255,7 +264,12 @@ export default function JobVacancyLanding() {
 
   const handleApplyOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
+    setApplyError("");
     if (!candName.trim() || !candEmail.trim() || !project) return;
+    if (!candidateConsentOk) {
+      setApplyError("Для отклика необходимо согласиться с политикой конфиденциальности, пользовательским соглашением и обработкой персональных данных.");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -487,27 +501,38 @@ export default function JobVacancyLanding() {
 
             {/* CTA action button */}
             <div className="pt-2 text-center sm:text-left">
-              {employerContacts && (employerContacts.email || employerContacts.phone || employerContacts.telegram) && (
-                <div className="mb-4 bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-5 space-y-2 text-left">
+              {employerContactsList.some((c) => c.email || c.phone || c.telegram || c.name) && (
+                <div className="mb-4 bg-transparent backdrop-blur-xl border border-white/20 rounded-2xl p-5 space-y-3 text-left">
                   <h3 className="font-bold text-sm bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent flex items-center gap-2">
-                    <User className="w-4 h-4 text-[#E7C768]" /> Контакты работодателя
+                    <User className="w-4 h-4 text-[#E7C768]" />
+                    {employerContactsList.length > 1 ? "Контакты ответственных работодателей" : "Контакты работодателя"}
                   </h3>
-                  <div className="space-y-2 text-sm text-slate-200">
-                    {employerContacts.email && (
-                      <a href={`mailto:${employerContacts.email}`} className="flex items-center gap-2 hover:text-[#E7C768] transition">
-                        <Mail className="w-4 h-4 text-slate-300" /> {employerContacts.email}
-                      </a>
-                    )}
-                    {employerContacts.phone && (
-                      <a href={`tel:${employerContacts.phone}`} className="flex items-center gap-2 hover:text-[#E7C768] transition">
-                        <HelpCircle className="w-4 h-4 text-slate-300" /> {employerContacts.phone}
-                      </a>
-                    )}
-                    {employerContacts.telegram && (
-                      <a href={`https://t.me/${String(employerContacts.telegram).replace(/^@/, "")}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:text-[#E7C768] transition">
-                        <MessageSquare className="w-4 h-4 text-slate-300" /> @{String(employerContacts.telegram).replace(/^@/, "")}
-                      </a>
-                    )}
+                  <div className={`grid gap-3 ${employerContactsList.length > 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+                    {employerContactsList.map((contact, idx) => (
+                      <div key={contact.id || idx} className="space-y-1.5 text-sm text-white/90 bg-transparent backdrop-blur-md border border-white/15 rounded-xl p-3.5">
+                        {contact.name && (
+                          <div className="font-semibold text-white">
+                            {contact.name}
+                            {contact.roleTitle ? <span className="text-white/70 font-normal"> · {contact.roleTitle}</span> : null}
+                          </div>
+                        )}
+                        {contact.email && (
+                          <a href={`mailto:${contact.email}`} className="flex items-center gap-2 hover:text-[#E7C768] transition break-all">
+                            <Mail className="w-4 h-4 text-[#E7C768] shrink-0" /> {contact.email}
+                          </a>
+                        )}
+                        {contact.phone && (
+                          <a href={`tel:${contact.phone}`} className="flex items-center gap-2 hover:text-[#E7C768] transition">
+                            <HelpCircle className="w-4 h-4 text-[#E7C768] shrink-0" /> {contact.phone}
+                          </a>
+                        )}
+                        {contact.telegram && (
+                          <a href={`https://t.me/${String(contact.telegram).replace(/^@/, "")}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:text-[#E7C768] transition">
+                            <MessageSquare className="w-4 h-4 text-[#E7C768] shrink-0" /> @{String(contact.telegram).replace(/^@/, "")}
+                          </a>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -698,6 +723,25 @@ export default function JobVacancyLanding() {
                 </div>
               </div>
 
+              <LegalConsentBlock
+                mode="candidate"
+                context="register"
+                checked={candidateConsentOk}
+                onChange={(v) => {
+                  setCandidateConsentOk(v);
+                  if (v) setApplyError("");
+                }}
+                companyName={project.companyName}
+                roleName={project.roleName}
+                themeConfig={effectiveTheme}
+              />
+
+              {applyError && (
+                <div className="bg-transparent border border-[#E7C768] text-[#E7C768] rounded-xl p-3 text-sm font-semibold">
+                  {applyError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={submitting}
@@ -715,10 +759,6 @@ export default function JobVacancyLanding() {
               </button>
 
             </form>
-
-            <span className="text-xs block text-center text-slate-400 leading-relaxed italic">
-              Заполняя данные, вы соглашаетесь с обработкой персональных данных для прохождения собеседования.
-            </span>
 
           </div>
         </div>

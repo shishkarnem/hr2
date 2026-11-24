@@ -56,6 +56,15 @@ export interface CrmFieldFilters {
   [key: string]: string | undefined;
 }
 
+export interface CrmVacancyOption {
+  value: string;
+  label: string;
+  roleName: string;
+  projectId?: string;
+  publicId?: string;
+  status?: string;
+}
+
 interface CrmFilterModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -67,6 +76,7 @@ interface CrmFilterModalProps {
   crmFilterRole: string;
   setCrmFilterRole: (v: string) => void;
   crmRoleOptions: string[];
+  crmVacancyOptions?: CrmVacancyOption[];
   crmFilterStage: string;
   setCrmFilterStage: (v: string) => void;
   crmFilterDecision: string;
@@ -101,6 +111,7 @@ export const CrmFilterModal: React.FC<CrmFilterModalProps> = ({
   crmFilterRole,
   setCrmFilterRole,
   crmRoleOptions,
+  crmVacancyOptions,
   crmFilterStage,
   setCrmFilterStage,
   crmFilterDecision,
@@ -336,9 +347,13 @@ export const CrmFilterModal: React.FC<CrmFilterModalProps> = ({
                 className="w-full bg-transparent backdrop-blur-xl text-white border border-white/20 rounded-xl text-[14px] px-3.5 py-2.5 focus:outline-none focus:border-[#d4af37]"
               >
                 <option value="all" className="bg-[#17344F] text-white">Все вакансии</option>
-                {crmRoleOptions.map((r) => (
-                  <option key={r} value={r} className="bg-[#17344F] text-white">{r}</option>
-                ))}
+                {crmVacancyOptions && crmVacancyOptions.length > 0
+                  ? crmVacancyOptions.map((v) => (
+                      <option key={v.value} value={v.value} className="bg-[#17344F] text-white">{v.label}</option>
+                    ))
+                  : crmRoleOptions.map((r) => (
+                      <option key={r} value={r} className="bg-[#17344F] text-white">{r}</option>
+                    ))}
               </select>
             </div>
 
@@ -946,6 +961,7 @@ interface TableColumnModalProps {
   setCrmSort: React.Dispatch<React.SetStateAction<{ field: any; dir: "asc" | "desc" }>>;
   crmCompanyOptions: string[];
   crmRoleOptions: string[];
+  crmVacancyOptions?: CrmVacancyOption[];
   onResetCol: (key: string) => void;
 }
 
@@ -958,6 +974,7 @@ export const TableColumnModal: React.FC<TableColumnModalProps> = ({
   setCrmSort,
   crmCompanyOptions,
   crmRoleOptions,
+  crmVacancyOptions,
   onResetCol,
 }) => {
   if (!columnKey) return null;
@@ -1203,9 +1220,13 @@ export const TableColumnModal: React.FC<TableColumnModalProps> = ({
                   className="w-full bg-transparent backdrop-blur-xl text-white border border-white/20 rounded-xl text-[14px] px-3 py-2 focus:outline-none focus:border-[#d4af37]"
                 >
                   <option value="all" className="bg-[#17344F] text-white">Все вакансии</option>
-                  {crmRoleOptions.map((r) => (
-                    <option key={r} value={r} className="bg-[#17344F] text-white">{r}</option>
-                  ))}
+                  {crmVacancyOptions && crmVacancyOptions.length > 0
+                    ? crmVacancyOptions.map((v) => (
+                        <option key={v.value} value={v.value} className="bg-[#17344F] text-white">{v.label}</option>
+                      ))
+                    : crmRoleOptions.map((r) => (
+                        <option key={r} value={r} className="bg-[#17344F] text-white">{r}</option>
+                      ))}
                 </select>
               </div>
             </div>

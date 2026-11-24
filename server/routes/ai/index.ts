@@ -10,6 +10,7 @@ import {
   handleEvaluateOverallCandidate,
   handleCandidateStageAdvanceV2,
 } from "../../aiHelpers/overallEval";
+import { handleEvaluateTrainingSummaryV2 } from "../../aiHelpers/summary/trainingSummaryEval";
 import { resumeAndIngestionRouter, handleScreenResume } from "./resumeAndIngestion";
 import {
   enhancersRouter,
@@ -28,6 +29,7 @@ export const aiRouter = Router();
 
 aiRouter.use("/", situationsAndChecklistRouter);
 aiRouter.post(["/ai-evaluate-overall-candidate", "/ai-evaluate-overall-candidate-v2"], handleEvaluateOverallCandidate);
+aiRouter.post(["/ai-evaluate-training-summary", "/ai-evaluate-training-summary-v2"], handleEvaluateTrainingSummaryV2);
 aiRouter.post("/candidate-stage-advance-v2", handleCandidateStageAdvanceV2);
 aiRouter.use("/", resumeAndIngestionRouter);
 aiRouter.use("/", enhancersRouter);
@@ -56,6 +58,7 @@ aiRouter.post("/ai-fallback-rr-pro-max", async (req: Request, res: Response) => 
       if (stored.task_type === "checklist_grade") return handleGradeChecklist(req, res);
       if (stored.task_type === "situations_grade") return handleGradeSituations(req, res);
       if (stored.task_type === "overall_eval") return handleEvaluateOverallCandidate(req, res);
+      if (stored.task_type === "training_summary") return handleEvaluateTrainingSummaryV2(req, res);
       if (stored.task_type === "training_stage_test") return handleGenerateStageTest(req, res);
       if (stored.task_type === "training_stage_material") return handleGenerateStageMaterial(req, res);
       if (stored.task_type === "interview_resume_criteria") return handleGenerateInterviewResumeCriteria(req, res);

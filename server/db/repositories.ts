@@ -318,7 +318,7 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
     }
 
     const legacyPublicId = proj.legacy_public_id || proj.legacyPublicId || null;
-    const roleName = cleanMojibakeText(proj.role_name || proj.roleName || "");
+    const roleName = cleanMojibakeText(proj.role_name || proj.roleName || "").trim();
     const roleSlug = transliterateToSlug(roleName);
     let desiredRoleBase = roleSlug;
     if (!desiredRoleBase) {
@@ -340,6 +340,23 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
     const cssStr = proj.css !== undefined ? String(proj.css || "") : existingProj?.css || null;
     const companyPublicId = toBigIntOrNull(proj.company_public_id || existingProj?.company_public_id);
     const employerPublicId = proj.employer_public_id || existingProj?.employer_public_id || null;
+    const { parseResponsibleIdsList, serializeResponsibleIds } = await import(
+      "../services/notifications/vacancyResponsiblesResolver"
+    );
+    const resolvedRespIds = parseResponsibleIdsList(
+      {
+        ...existingProj,
+        ...proj,
+        responsible_employer_id:
+          proj.responsible_employer_id ?? proj.responsibleEmployerId ?? existingProj?.responsible_employer_id,
+        responsible_employer_ids:
+          proj.responsible_employer_ids ?? proj.responsibleEmployerIds ?? existingProj?.responsible_employer_ids,
+        employer_id: employerId,
+      },
+      employerId
+    );
+    const responsibleEmployerId = resolvedRespIds[0] || employerId || null;
+    const responsibleEmployerIdsStr = serializeResponsibleIds(resolvedRespIds);
 
     const salaryTerms = proj.salary_terms || proj.salaryTerms || "";
     const scheduleTerms = proj.schedule_terms || proj.scheduleTerms || "";
@@ -414,7 +431,13 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
       notifications_config: notifCfgObj,
       notificationsConfig: notifCfgObj,
       id, public_id: publicId, publicId, legacy_public_id: legacyPublicId,
-      employer_id: employerId, employerId, company_id: companyId, companyId,
+      employer_id: employerId,
+      employerId,
+      responsible_employer_id: responsibleEmployerId,
+      responsibleEmployerId,
+      responsible_employer_ids: resolvedRespIds,
+      responsibleEmployerIds: resolvedRespIds,
+      company_id: companyId, companyId,
       company_name: companyName, companyName, company_slug: companySlug, companySlug,
       slug, role_slug: roleSlugFinal, legacy_slug: legacySlug,
       role_name: roleName, roleName, salary_terms: salaryTerms, salaryTerms,
@@ -447,7 +470,7 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
 
     await db.run(
       `INSERT INTO projects (
-        id, public_id, legacy_public_id, employer_id, company_id, company_name, company_slug,
+        id, public_id, legacy_public_id, employer_id, responsible_employer_id, responsible_employer_ids, company_id, company_name, company_slug,
         slug, role_slug, legacy_slug, role_name, salary_terms, schedule_terms, motivation_text,
         motivation_text_detail, custom_wiki, vacancy_text, tasks_activity_text, schedule_text,
         payouts_text, onboarding_text, company_text, mission_text, team_text, system_text,
@@ -460,7 +483,7 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
         theme_config, css, company_public_id, employer_public_id, candidate_fields_config,
         notifications_config, data_json, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()
       )
@@ -468,6 +491,8 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
         public_id = EXCLUDED.public_id,
         legacy_public_id = EXCLUDED.legacy_public_id,
         employer_id = EXCLUDED.employer_id,
+        responsible_employer_id = EXCLUDED.responsible_employer_id,
+        responsible_employer_ids = EXCLUDED.responsible_employer_ids,
         company_id = EXCLUDED.company_id,
         company_name = EXCLUDED.company_name,
         company_slug = EXCLUDED.company_slug,
@@ -528,7 +553,7 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
         data_json = EXCLUDED.data_json,
         updated_at = NOW()`,
       [
-        id, toBigIntOrNull(publicId), legacyPublicId, employerId, companyId, companyName, companySlug,
+        id, toBigIntOrNull(publicId), legacyPublicId, employerId, responsibleEmployerId, responsibleEmployerIdsStr, companyId, companyName, companySlug,
         slug, roleSlugFinal, legacySlug, roleName, salaryTerms, scheduleTerms, motivationText,
         motivationTextDetail, customWiki, vacancyText, tasksActivityText, scheduleText,
         payoutsText, onboardingText, companyText, missionText, teamText, systemText,
@@ -542,6 +567,22 @@ export async function saveProjectToProTalkDB(db: PgDBWrapper, proj: any) {
         notifCfgStr, JSON.stringify(fullSnapshot),
       ]
     );
+
+    if (db && roleName) {
+      try {
+        await db.run(
+          `UPDATE candidates
+           SET role_name = ?,
+               company_id = COALESCE(NULLIF(?, ''), company_id),
+               updated_at = NOW()
+           WHERE (project_id = ? OR project_id = ?)
+             AND COALESCE(role_name, '') != ?`,
+          [roleName, companyId ? String(companyId) : "", id, String(publicId), roleName]
+        );
+      } catch (cascadeErr: any) {
+        console.warn("[BD ProTalk] Failed to cascade role_name to candidates:", cascadeErr?.message);
+      }
+    }
 
     invalidatePublicVacanciesCache();
     return fullSnapshot;

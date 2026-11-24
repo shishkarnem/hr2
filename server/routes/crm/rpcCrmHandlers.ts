@@ -6,6 +6,7 @@ import {
   normalizeCrmStageName,
   pickMonotonicCrmStage,
 } from "../../services/crmReconciler";
+import { dispatchUserNotification } from "../../services/push/pushService";
 import {
   extractStandardFieldsFromCandidateRow,
   extractCustomFieldsFromCandidateRow,
@@ -39,7 +40,7 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
   // Fast parallel path for super-admin 100007 without project filter: run all 5 queries concurrently (no 1780-param IN lists)
   if (isFastSuperAdmin) {
     const [allProjects, allCompanies, rawCandList, allScores, allStageProg] = await Promise.all([
-      db.all("SELECT id, public_id, company_id, company_public_id, company_name, employer_id, employer_public_id, role_name FROM projects"),
+      db.all("SELECT id, public_id, company_id, company_public_id, company_name, employer_id, employer_public_id, role_name, status FROM projects"),
       db.all("SELECT id, public_id, employer_id, owner_employer_id, name, slug FROM companies"),
       db.all(`SELECT ${CANDIDATE_LIST_COLS} FROM candidates ORDER BY created_at DESC`),
       db.all("SELECT candidate_id, overall_score, interview_score, resume_score, checklist_score, situations_score FROM candidate_scores"),
@@ -53,7 +54,10 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
     const projMap = new Map<string, any>();
     for (const p of allProjects || []) {
       projMap.set(String(p.id), p);
-      if (p.public_id) projMap.set(String(p.public_id), p);
+      if (p.public_id) {
+        projMap.set(String(p.public_id), p);
+        projMap.set(`vac_${p.public_id}`, p);
+      }
     }
     const compMap = new Map<string, any>();
     for (const c of allCompanies || []) {
@@ -78,7 +82,7 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
 
   const [allProjects, allCompanies, emp] = await Promise.all([
     db.all(
-      "SELECT id, public_id, company_id, company_public_id, company_name, employer_id, employer_public_id, role_name FROM projects"
+      "SELECT id, public_id, company_id, company_public_id, company_name, employer_id, employer_public_id, role_name, status FROM projects"
     ),
     db.all("SELECT id, public_id, employer_id, owner_employer_id, name, slug FROM companies"),
     method === "employer_list_candidates" && empRaw
@@ -92,7 +96,10 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
   const projMap = new Map<string, any>();
   for (const p of allProjects || []) {
     projMap.set(String(p.id), p);
-    if (p.public_id) projMap.set(String(p.public_id), p);
+    if (p.public_id) {
+      projMap.set(String(p.public_id), p);
+      projMap.set(`vac_${p.public_id}`, p);
+    }
   }
 
   const compMap = new Map<string, any>();
@@ -120,11 +127,18 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
         const empIds = new Set(
           [emp.id, emp.public_id, emp.user_id, empRaw, cleanEmp].filter(Boolean).map((x) => String(x))
         );
-        const empProjects = (allProjects || []).filter(
-          (p: any) =>
-            (p.employer_id && empIds.has(String(p.employer_id))) ||
-            (p.employer_public_id && empIds.has(String(p.employer_public_id)))
-        );
+        const empProjects = (allProjects || []).filter((p: any) => {
+          if (p.employer_id && empIds.has(String(p.employer_id))) return true;
+          if (p.employer_public_id && empIds.has(String(p.employer_public_id))) return true;
+          if (p.responsible_employer_id && empIds.has(String(p.responsible_employer_id))) return true;
+          if (p.responsible_employer_ids) {
+            const rawIds = String(p.responsible_employer_ids);
+            for (const eid of empIds) {
+              if (eid && rawIds.includes(eid)) return true;
+            }
+          }
+          return false;
+        });
         const empCompanies = (allCompanies || []).filter(
           (c: any) =>
             (c.employer_id && empIds.has(String(c.employer_id))) ||
@@ -286,7 +300,9 @@ function buildEnrichedCandidates(
   stageProgByCand: Map<string, any[]>
 ) {
   return rawCandidates.map((c: any) => {
-    const proj = c.project_id ? projMap.get(String(c.project_id)) : null;
+    const proj = c.project_id
+      ? projMap.get(String(c.project_id)) || projMap.get(String(c.project_id).replace(/^vac_?/i, "")) || null
+      : null;
     const effectiveCompanyId = proj?.company_id || c.company_id || null;
     const comp = effectiveCompanyId ? compMap.get(String(effectiveCompanyId)) : null;
     const sc = scoreMap.get(String(c.id)) || {};
@@ -338,11 +354,15 @@ function buildEnrichedCandidates(
       company_id: effectiveCompanyId,
       company_name: comp?.name || proj?.company_name || "—",
       company_public_id: comp?.public_id || null,
+      project_id: proj?.id || c.project_id,
       project_public_id: proj?.public_id || null,
-      role_name: c.role_name || proj?.role_name || "—",
+      project_status: proj?.status || null,
+      role_name: String(proj?.role_name || c.role_name || "—").trim(),
       full_name: c.full_name || stdFields.full_name || c.email || `Кандидат #${pubId}`,
       phone: c.phone || stdFields.phone || "",
       email: c.email || stdFields.email || "",
+      avatar_url: c.avatar_url || "",
+      avatarUrl: c.avatar_url || "",
       resume_url: c.resume_url || stdFields.resume_url || "",
       overall_score: overallScore,
       resume_score: sc.resume_score ?? c.resume_score ?? null,
@@ -519,6 +539,17 @@ export async function handleCandidateFullDetailsRpc(db: PgDBWrapper, body: any, 
       })()
     : {};
 
+  let responsibleContacts: any[] = [];
+  if (proj) {
+    try {
+      const { resolveVacancyResponsibleEmployers, buildVacancyContactDTO } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const resolved = await resolveVacancyResponsibleEmployers(db, proj, proj.employer_id || comp?.employer_id || null);
+      responsibleContacts = (resolved || []).map(buildVacancyContactDTO);
+    } catch {}
+  }
+
   return res.json({
     ok: true,
     candidate: candidateObj,
@@ -527,6 +558,7 @@ export async function handleCandidateFullDetailsRpc(db: PgDBWrapper, body: any, 
     training_summary: trainingSummaryObj,
     company: comp || {},
     project: cleanProj,
+    responsible_contacts: responsibleContacts,
     stage_progress: stageProgress,
     training_attempts: trainingAttempts,
     interviews: rawInterviews || [],
@@ -618,7 +650,10 @@ export async function handleCandidateStageAndDecisionRpc(db: PgDBWrapper, method
           message: "Для перехода на этап обучения необходимо завершить все 3 этапа собеседования: резюме, чек-лист и ситуации.",
         });
       }
-      if (cand.crm_stage === "interview_reject" || (allStagesDone && finalScore < passScore)) {
+      if (
+        (isStageManual(cand.crm_stage_manual) && cand.crm_stage === "interview_reject") ||
+        (allStagesDone && finalScore < passScore)
+      ) {
         return res.json({
           ok: false,
           error: "interview_reject",
@@ -681,36 +716,27 @@ export async function handleCandidateStageAndDecisionRpc(db: PgDBWrapper, method
     const msg = String(_message || _reason || "").trim();
     let hireDecision = "review";
     let inviteStatus = "review";
-    let nextStage = cand.current_stage || "interview";
-    let nextCrmStage = cand.crm_stage || "registration";
 
     if (_decision === "invited" || _decision === "approve" || _decision === "approved") {
       hireDecision = "invited";
       inviteStatus = "approved";
-      if (["interview_reject", "screening", "registration", "checklist", "situations"].includes(cand.crm_stage)) {
-        nextCrmStage = "interview_success";
-      }
-      nextStage = "training";
     } else if (_decision === "rejected" || _decision === "reject") {
       hireDecision = "rejected";
       inviteStatus = "rejected";
-      nextCrmStage = "interview_reject";
     }
 
+    // Решения по кандидату (Пригласить / На рассмотрении / Отказать) не меняют стадию воронки (crm_stage/stage/current_stage).
     await db.run(
       `UPDATE candidates SET
         hire_decision = ?,
         hire_decided_at = NOW(),
         hire_message = ?,
-        current_stage = ?,
-        crm_stage = ?,
         updated_at = NOW()
        WHERE id = ?`,
-      [hireDecision, msg || null, nextStage, nextCrmStage, cand.id]
+      [hireDecision, msg || null, cand.id]
     );
 
     try {
-      const notifId = crypto.randomUUID();
       const title =
         hireDecision === "invited"
           ? "Приглашение на работу!"
@@ -726,24 +752,46 @@ export async function handleCandidateStageAndDecisionRpc(db: PgDBWrapper, method
           : "К сожалению, в настоящий момент мы не готовы сделать предложение.");
       const link = `/cand${cand.public_id || cand.id}/profile`;
 
-      await db.run(
-        `INSERT INTO notifications (id, user_id, user_role, kind, title, body, link, meta_json, created_at, recipient_kind, candidate_id)
-         VALUES (?, ?, 'candidate', 'hire_decision', ?, ?, ?, ?, NOW(), 'candidate', ?)`,
-        [notifId, cand.user_id || null, title, bodyTxt, link, JSON.stringify({ hire_decision: hireDecision, candidate_id: cand.id }), cand.id]
-      );
+      await dispatchUserNotification(db, {
+        ownerType: "candidate",
+        ownerIds: [String(cand.id), String(cand.public_id || "")].filter(Boolean),
+        eventKey: "hire_decision",
+        kind: "hire_decision",
+        title,
+        body: bodyTxt,
+        link,
+        meta: { hire_decision: hireDecision, candidate_id: cand.id },
+        candidateId: cand.id,
+      });
     } catch (e: any) {
-      console.warn("Could not insert candidate decision notification:", e?.message);
+      console.warn("Could not dispatch candidate decision notification:", e?.message);
     }
 
     const updated = await db.get("SELECT * FROM candidates WHERE id = ?", [cand.id]);
     if (updated) await saveCandidateToProTalkDB(db, updated);
+
+    try {
+      const empIdArg = String(body?._employer_id || "").replace(/^emp-?/i, "").trim();
+      const tplIdArg = body?._template_id ? String(body._template_id).trim() : null;
+      if (empIdArg && tplIdArg) {
+        const { rememberDecisionTemplateSelection } = await import("./decisionTemplates");
+        await rememberDecisionTemplateSelection(
+          db,
+          empIdArg,
+          hireDecision as "invited" | "review" | "rejected",
+          tplIdArg
+        );
+      }
+    } catch {}
+
     return res.json({
       ok: true,
       hire_decision: hireDecision,
       hire_message: msg || null,
       invite_status: inviteStatus,
-      current_stage: nextStage,
-      crm_stage: nextCrmStage,
+      current_stage: updated?.current_stage ?? cand.current_stage,
+      stage: updated?.stage ?? cand.stage,
+      crm_stage: updated?.crm_stage ?? cand.crm_stage,
     });
   }
 
@@ -766,18 +814,43 @@ export async function handleCandidateFlowStateRpc(db: PgDBWrapper, body: any, re
       );
     } catch {}
   }
-  const proj = cand?.project_id
-    ? await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
-        cand.project_id,
-        String(cand.project_id),
-      ])
-    : null;
-  const sc = cand?.id ? await db.get("SELECT * FROM candidate_scores WHERE candidate_id = ? LIMIT 1", [cand.id]) : null;
+  const [proj, sc, stageProg] = await Promise.all([
+    cand?.project_id
+      ? db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
+          cand.project_id,
+          String(cand.project_id),
+        ])
+      : Promise.resolve(null),
+    cand?.id ? db.get("SELECT * FROM candidate_scores WHERE candidate_id = ? LIMIT 1", [cand.id]) : Promise.resolve(null),
+    cand?.id
+      ? db.all("SELECT stage, passed_at, best_score FROM candidate_stage_progress WHERE candidate_id = ?", [cand.id])
+      : Promise.resolve([]),
+  ]);
+
+  const normPassed = new Set<string>();
+  for (const sp of stageProg || []) {
+    if (sp.passed_at != null || (sp.best_score != null && Number(sp.best_score) >= 70)) {
+      const s = String(sp.stage || "").toLowerCase();
+      if (s.includes("prof")) normPassed.add("professional");
+      else if (s.includes("prod")) normPassed.add("product");
+      else if (s.includes("sys")) normPassed.add("systems");
+    }
+  }
+  const isCertified = Boolean(
+    cand &&
+      (String(cand.crm_stage || "").toLowerCase() === "certified" ||
+        String(cand.stage || "").toLowerCase() === "certified" ||
+        String(cand.current_stage || "").toLowerCase() === "certified" ||
+        Boolean(cand.certified) ||
+        (normPassed.has("professional") && normPassed.has("product") && normPassed.has("systems")))
+  );
+
   const passScore = Number(proj?.interview_pass_score ?? 70);
-  const stage = cand?.current_stage || "terms";
+  const stage = isCertified ? "certified" : cand?.current_stage || "terms";
   const avgScore = sc?.overall_score != null ? Number(sc.overall_score) : cand?.score != null ? Number(cand.score) : null;
   const isPassed = Boolean(
-    (avgScore !== null && avgScore >= passScore) ||
+    isCertified ||
+      (avgScore !== null && avgScore >= passScore) ||
       ["interview_success", "professional", "product", "systems", "certified"].includes(cand?.crm_stage || "") ||
       ["training", "certified"].includes(cand?.current_stage || "")
   );
@@ -785,11 +858,13 @@ export async function handleCandidateFlowStateRpc(db: PgDBWrapper, body: any, re
     ok: true,
     data: {
       stage,
+      certified: isCertified,
       interview_passed: isPassed,
       interview_average: avgScore,
       interview_pass_score: passScore,
     },
     stage,
+    certified: isCertified,
     interview_passed: isPassed,
     interview_average: avgScore,
     interview_pass_score: passScore,

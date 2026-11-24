@@ -128,24 +128,22 @@ cabinetAndStageRouter.get(["/candidate/cabinet", "/candidates/cabinet"], async (
     }
 
     const compId = cand.company_id || project?.company_id;
-    const empId = project?.employer_id || cand.employer_id;
+    const company = compId
+      ? await db.get(
+          `SELECT * FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? OR slug = ? LIMIT 1`,
+          [compId, String(compId), compId]
+        )
+      : null;
 
-    const [company, employerContactsRaw, scoreRow, stageProgress, trainingAttempts] = await Promise.all([
-      compId
-        ? db.get(
-            `SELECT * FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? OR slug = ? LIMIT 1`,
-            [compId, String(compId), compId]
-          )
-        : Promise.resolve(null),
-      empId
-        ? db.get(
-            `SELECT contact_email as email, contact_phone as phone, contact_telegram as telegram,
-                    name as employer_name, contact_name,
-                    interview_credits, interview_setup_credits, balance_limits, limits_json
-             FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1`,
-            [empId, String(empId)]
-          )
-        : Promise.resolve(null),
+    const { resolveVacancyResponsibleEmployers, formatResponsibleContacts } = await import(
+      "../../services/notifications/vacancyResponsiblesResolver"
+    );
+    const [resolvedResponsibles, scoreRow, stageProgress, trainingAttempts] = await Promise.all([
+      resolveVacancyResponsibleEmployers(
+        db,
+        project,
+        cand.employer_id || company?.owner_employer_id || company?.employer_id || null
+      ),
       db.get(`SELECT * FROM candidate_scores WHERE candidate_id = ? LIMIT 1`, [cand.id]),
       db.all(`SELECT * FROM candidate_stage_progress WHERE candidate_id = ? ORDER BY updated_at DESC`, [cand.id]),
       db.all(`SELECT * FROM candidate_training_attempts WHERE candidate_id = ? ORDER BY attempt_no DESC, created_at DESC`, [
@@ -153,10 +151,57 @@ cabinetAndStageRouter.get(["/candidate/cabinet", "/candidates/cabinet"], async (
       ]),
     ]);
 
-    const employerContacts = employerContactsRaw ? { ...employerContactsRaw } : null;
-    if (employerContacts) {
-      employerContacts.name =
-        employerContacts.employer_name || employerContacts.contact_name || employerContacts.name || null;
+    const { primary: primaryContact, list: employerContactsList } = formatResponsibleContacts(
+      resolvedResponsibles,
+      company?.name || project?.company_name || ""
+    );
+    const primaryEmpRow = resolvedResponsibles[0]?.empRow || null;
+    const employerContacts =
+      employerContactsList.length > 0
+        ? {
+            ...(primaryEmpRow || {}),
+            id: primaryContact.id,
+            public_id: primaryContact.public_id,
+            name: primaryContact.name || null,
+            employer_name: primaryContact.name || null,
+            contact_name: primaryContact.name || null,
+            email: primaryContact.email || null,
+            phone: primaryContact.phone || null,
+            telegram: primaryContact.telegram || null,
+            avatar_url: primaryContact.avatar_url || null,
+            roleLabel: primaryContact.roleLabel || null,
+          }
+        : company
+        ? {
+            name: company.name || null,
+            email: null,
+            phone: null,
+            telegram: null,
+          }
+        : null;
+
+    const normPassedStages = new Set<string>();
+    for (const sp of stageProgress || []) {
+      if (sp.passed_at != null || (sp.best_score != null && Number(sp.best_score) >= 70)) {
+        const s = String(sp.stage || "").toLowerCase();
+        if (s.includes("prof")) normPassedStages.add("professional");
+        else if (s.includes("prod")) normPassedStages.add("product");
+        else if (s.includes("sys")) normPassedStages.add("systems");
+      }
+    }
+    const isCandCertified =
+      String(cand.crm_stage || "").toLowerCase() === "certified" ||
+      String(cand.stage || "").toLowerCase() === "certified" ||
+      String(cand.current_stage || "").toLowerCase() === "certified" ||
+      Boolean(cand.certified) ||
+      (normPassedStages.has("professional") && normPassedStages.has("product") && normPassedStages.has("systems"));
+    if (isCandCertified && String(cand.current_stage || "").toLowerCase() !== "certified") {
+      try {
+        await db.run(
+          `UPDATE candidates SET current_stage = 'certified', crm_stage = 'certified', stage = 'certified', updated_at = NOW() WHERE id = ?`,
+          [cand.id]
+        );
+      } catch {}
     }
 
     let scores: any = null;
@@ -217,11 +262,13 @@ cabinetAndStageRouter.get(["/candidate/cabinet", "/candidates/cabinet"], async (
         project_id: cand.project_id,
         companyId: project?.company_id || cand.company_id,
         company_id: project?.company_id || cand.company_id,
-        roleName: cand.role_name || project?.role_name || "",
-        currentStage: cand.current_stage || "terms",
-        stage: cand.stage || "screening",
-        crmStage: cand.crm_stage || "new",
+        roleName: String(project?.role_name || cand.role_name || "").trim(),
+        currentStage: isCandCertified ? "certified" : cand.current_stage || "terms",
+        stage: isCandCertified ? "certified" : cand.stage || "screening",
+        crmStage: isCandCertified ? "certified" : cand.crm_stage || "new",
+        certified: isCandCertified,
         registeredVia: cand.registered_via || "email",
+        registered_via: cand.registered_via || "email",
         avatarUrl: cand.avatar_url || "",
         avatar_url: cand.avatar_url || "",
         resumeUrl: cand.resume_url || stdFields.resume_url || "",
@@ -291,6 +338,7 @@ cabinetAndStageRouter.get(["/candidate/cabinet", "/candidates/cabinet"], async (
           }
         : null,
       employer_contacts: employerContacts,
+      employer_contacts_list: employerContactsList,
       applications: [],
     });
   } catch (err: any) {
@@ -301,24 +349,134 @@ cabinetAndStageRouter.get(["/candidate/cabinet", "/candidates/cabinet"], async (
 
 cabinetAndStageRouter.get(["/candidate/flow-state", "/candidates/flow-state"], async (req: Request, res: Response) => {
   try {
-    const candToken = (req.headers["x-candidate-token"] || req.query.token || req.query.candidate_id || "") as string;
-    const cleanCandId = candToken.replace(/^candidate/i, "").replace(/^cand/i, "").trim();
+    const candToken = String(req.headers["x-candidate-token"] || req.query.token || req.query.candidate_id || "").trim();
+    const cleanCandId = candToken.replace(/^candidate/i, "").replace(/^cand-?/i, "").trim();
 
+    const db = await getProTalkDB();
     let cand: any = null;
-    if (candToken && candidateSessions[candToken]) {
-      cand = candidateSessions[candToken];
-    }
 
-    if (!cand && cleanCandId) {
-      const db = await getProTalkDB();
+    if (cleanCandId || candToken) {
       cand = await db.get(
-        `SELECT * FROM candidates WHERE CAST(public_id AS TEXT) = ? OR id = ? LIMIT 1`,
-        [cleanCandId, candToken]
+        `SELECT * FROM candidates
+         WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(legacy_public_id AS TEXT) = ?
+         LIMIT 1`,
+        [candToken, cleanCandId, `cand-${cleanCandId}`, cleanCandId]
       );
+      if (!cand && candToken) {
+        try {
+          cand = await db.get(
+            `SELECT c.* FROM candidate_sessions s JOIN candidates c ON s.candidate_id = c.id WHERE s.token = ? OR s.id = ? LIMIT 1`,
+            [candToken, candToken]
+          );
+        } catch {}
+      }
     }
 
-    const stage = cand?.current_stage || "terms";
-    return res.json({ ok: true, stage, data: { stage } });
+    if (!cand && candToken && candidateSessions[candToken]) {
+      const mem = candidateSessions[candToken];
+      const memClean = String(mem.public_id || mem.id || "").replace(/^candidate/i, "").replace(/^cand-?/i, "").trim();
+      if (memClean) {
+        cand = await db.get(
+          `SELECT * FROM candidates WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1`,
+          [mem.id || memClean, memClean]
+        );
+      }
+      if (!cand) cand = mem;
+    }
+
+    let isCertified = false;
+    let stage = cand?.current_stage || "terms";
+    let interviewPassed = false;
+    let interviewAverage: number | null = null;
+    let passScore = 70;
+
+    if (cand?.id) {
+      const [stageProg, scoreRow, proj] = await Promise.all([
+        db.all(`SELECT stage, passed_at, best_score, last_score FROM candidate_stage_progress WHERE candidate_id = ?`, [cand.id]),
+        db.get(`SELECT overall_score, interview_score FROM candidate_scores WHERE candidate_id = ? LIMIT 1`, [cand.id]),
+        cand.project_id
+          ? db.get(`SELECT interview_pass_score FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1`, [
+              String(cand.project_id),
+              String(cand.project_id),
+            ])
+          : Promise.resolve(null),
+      ]);
+
+      passScore = Number(proj?.interview_pass_score ?? 70);
+      interviewAverage =
+        scoreRow?.overall_score != null
+          ? Number(scoreRow.overall_score)
+          : scoreRow?.interview_score != null
+          ? Number(scoreRow.interview_score)
+          : cand.score != null
+          ? Number(cand.score)
+          : null;
+
+      const normPassed = new Set<string>();
+      for (const sp of stageProg || []) {
+        if (sp.passed_at != null || (sp.best_score != null && Number(sp.best_score) >= 70)) {
+          const s = String(sp.stage || "").toLowerCase();
+          if (s.includes("prof")) normPassed.add("professional");
+          else if (s.includes("prod")) normPassed.add("product");
+          else if (s.includes("sys")) normPassed.add("systems");
+        }
+      }
+
+      const all3Passed = normPassed.has("professional") && normPassed.has("product") && normPassed.has("systems");
+      isCertified =
+        String(cand.crm_stage || "").toLowerCase() === "certified" ||
+        String(cand.stage || "").toLowerCase() === "certified" ||
+        String(cand.current_stage || "").toLowerCase() === "certified" ||
+        Boolean(cand.certified) ||
+        all3Passed;
+
+      if (isCertified) {
+        stage = "certified";
+        if (String(cand.current_stage || "").toLowerCase() !== "certified" || String(cand.crm_stage || "").toLowerCase() !== "certified") {
+          try {
+            await db.run(
+              `UPDATE candidates SET current_stage = 'certified', crm_stage = 'certified', stage = 'certified', updated_at = NOW() WHERE id = ?`,
+              [cand.id]
+            );
+          } catch {}
+        }
+      }
+
+      interviewPassed = Boolean(
+        isCertified ||
+          (interviewAverage !== null && interviewAverage >= passScore) ||
+          ["interview_success", "professional", "product", "systems", "certified"].includes(String(cand.crm_stage || "").toLowerCase()) ||
+          ["training", "certified"].includes(String(cand.current_stage || "").toLowerCase())
+      );
+
+      if (candToken && candidateSessions[candToken]) {
+        candidateSessions[candToken] = {
+          ...candidateSessions[candToken],
+          ...cand,
+          current_stage: stage,
+          crm_stage: isCertified ? "certified" : cand.crm_stage,
+          certified: isCertified,
+        };
+      }
+    }
+
+    return res.json({
+      ok: true,
+      stage,
+      certified: isCertified,
+      crm_stage: isCertified ? "certified" : cand?.crm_stage || "registration",
+      interview_passed: interviewPassed,
+      interview_average: interviewAverage,
+      interview_pass_score: passScore,
+      data: {
+        stage,
+        certified: isCertified,
+        crm_stage: isCertified ? "certified" : cand?.crm_stage || "registration",
+        interview_passed: interviewPassed,
+        interview_average: interviewAverage,
+        interview_pass_score: passScore,
+      },
+    });
   } catch (err: any) {
     return res.status(500).json({ ok: false, error: err.message || "flow_state_failed", stage: "terms" });
   }

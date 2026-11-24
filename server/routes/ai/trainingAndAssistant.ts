@@ -595,7 +595,12 @@ export const handleGradeTrainingQuiz = async (req: Request, res: Response) => {
       };
     });
 
-    const totalEarned = Math.round(perQuestion.reduce((sum, item) => sum + item.score, 0));
+    const rawEarned = perQuestion.reduce((sum, item) => sum + (Number(item.score) || 0), 0);
+    const maxPossible = perQuestion.reduce((sum, item) => sum + (Number(item.max) || 0), 0);
+    const totalEarned =
+      maxPossible > 0 && Math.abs(maxPossible - totalScore) > 0.5
+        ? Math.min(Math.round(totalScore), Math.round((rawEarned / maxPossible) * totalScore))
+        : Math.min(Math.round(totalScore), Math.round(rawEarned));
     const passed = totalEarned >= passScore;
 
     let extractedSummary =
@@ -677,41 +682,53 @@ export const handleGradeTrainingQuiz = async (req: Request, res: Response) => {
           await db.run(`UPDATE projects SET training_used = COALESCE(training_used, 0) + 1, updated_at = NOW() WHERE id = ?`, [
             String(effPid),
           ]);
-          await db.run(`UPDATE candidates SET training_charged_at = NOW() WHERE id = ?`, [candRow.id]);
+          await db.run(`UPDATE candidates SET training_charged_at = COALESCE(NULLIF(training_charged_at, ''), CAST(NOW() AS TEXT)) WHERE id = ?`, [candRow.id]);
+          try {
+            const { checkVacancyLowLimits } = await import("../../services/notifications/lowBalanceNotifier");
+            await checkVacancyLowLimits(db, String(effPid));
+          } catch {}
         }
 
         if (candRow) {
           const { isStageManual, normalizeCrmStageName, pickMonotonicCrmStage } = await import(
             "../../services/crmReconciler"
           );
+          const normStage = normalizeCrmStageName(stage);
+          const allStageRows =
+            (await db.all(
+              `SELECT stage, last_score, best_score, passed_at FROM candidate_stage_progress WHERE candidate_id = ?`,
+              [candRow.id]
+            )) || [];
+          const passedSet = new Set<string>();
+          const scoreByMod: Record<string, number> = {};
+          for (const r of allStageRows) {
+            const stKey = normalizeCrmStageName(r.stage);
+            const bestVal = r.best_score != null ? Number(r.best_score) : r.last_score != null ? Number(r.last_score) : null;
+            if (bestVal !== null && !Number.isNaN(bestVal)) {
+              scoreByMod[stKey] = Math.round(bestVal);
+            }
+            if (r.passed_at != null || (bestVal !== null && bestVal >= 70)) {
+              passedSet.add(stKey);
+            }
+          }
+          if (passed) passedSet.add(normStage);
+          scoreByMod[normStage] = Math.max(scoreByMod[normStage] ?? 0, Math.round(totalEarned));
+
+          const all3Passed =
+            passedSet.has("professional") && passedSet.has("product") && passedSet.has("systems");
+
+          let finalCrmStage = candRow.crm_stage || candRow.stage || candRow.current_stage || "professional";
           if (!isStageManual(candRow.crm_stage_manual)) {
-            const normStage = normalizeCrmStageName(stage);
             let candidateTarget = candRow.crm_stage || "professional";
             if (passed) {
-              const allPassedRows =
-                (await db.all(
-                  `SELECT stage FROM candidate_stage_progress WHERE candidate_id = ? AND passed_at IS NOT NULL`,
-                  [candRow.id]
-                )) || [];
-              const passedSet = new Set(allPassedRows.map((r: any) => normalizeCrmStageName(r.stage)));
-              passedSet.add(normStage);
-
-              if (passedSet.has("professional") && passedSet.has("product") && passedSet.has("systems")) {
-                candidateTarget = "certified";
-              } else if (normStage === "systems") {
-                candidateTarget = "systems";
-              } else if (normStage === "product") {
-                candidateTarget = "product";
-              } else {
-                candidateTarget = "professional";
-              }
-            } else {
-              if (normStage === "product" || normStage === "systems" || normStage === "professional") {
-                candidateTarget = normStage;
-              }
+              if (all3Passed) candidateTarget = "certified";
+              else if (normStage === "systems") candidateTarget = "systems";
+              else if (normStage === "product") candidateTarget = "product";
+              else candidateTarget = "professional";
+            } else if (normStage === "product" || normStage === "systems" || normStage === "professional") {
+              candidateTarget = normStage;
             }
-
-            const finalCrmStage = pickMonotonicCrmStage(
+            finalCrmStage = pickMonotonicCrmStage(
               candRow.crm_stage || candRow.stage || candRow.current_stage,
               candidateTarget
             );
@@ -720,6 +737,141 @@ export const handleGradeTrainingQuiz = async (req: Request, res: Response) => {
               [finalCrmStage, finalCrmStage, finalCrmStage, candRow.id]
             );
           }
+
+          try {
+            const { dispatchUserNotification, isChannelEnabledForEvent } = await import(
+              "../../services/push/pushService"
+            );
+            const candPub = candRow.public_id || candRow.id;
+            const candName = candRow.full_name || candRow.email || `Кандидат #${candPub}`;
+            const stageLabel =
+              normStage === "product"
+                ? "Этап 2: Продукт"
+                : normStage === "systems"
+                ? "Этап 3: Системы"
+                : "Этап 1: Профессия";
+
+            const projForNotif = effPid
+              ? await db.get(
+                  "SELECT id, employer_id, responsible_employer_id, responsible_employer_ids, company_id, role_name, interview_pass_score FROM projects WHERE id = ? LIMIT 1",
+                  [String(effPid)]
+                )
+              : null;
+            const passThreshold = Number(projForNotif?.interview_pass_score ?? 70);
+            const hasPassedInterview = Boolean(
+              (candRow.overall_score != null && Number(candRow.overall_score) >= passThreshold) ||
+                ["interview_success", "professional", "product", "systems", "certified"].includes(
+                  String(candRow.crm_stage || "").toLowerCase()
+                ) ||
+                ["training", "certified"].includes(String(candRow.current_stage || "").toLowerCase()) ||
+                finalCrmStage === "certified"
+            );
+            const isCert = (all3Passed && hasPassedInterview) || finalCrmStage === "certified";
+
+            // Candidate alert
+            await dispatchUserNotification(db, {
+              ownerType: "candidate",
+              ownerIds: [String(candRow.id), String(candPub)],
+              eventKey: isCert ? "certificate_issued" : "training_progress",
+              kind: isCert ? "certificate" : "training",
+              title: isCert
+                ? "Электронный сертификат выдан!"
+                : passed
+                ? `Аттестация пройдена: ${stageLabel}`
+                : `Результат теста: ${stageLabel}`,
+              body: isCert
+                ? "Поздравляем! Вы успешно прошли все 3 этапа обучения и получили электронный сертификат."
+                : `Результат теста (${stageLabel}): ${totalEarned} из ${Math.round(totalScore)} баллов.`,
+              link: `/cand${candPub}/profile`,
+              meta: { candidate_id: String(candPub), stage: normStage, score: totalEarned, passed, certified: isCert },
+              candidateId: String(candRow.id),
+            });
+
+            // Employer alerts across all selected vacancy responsibles
+            const { dispatchVacancyBellAndPushToResponsibles } = await import(
+              "../../services/notifications/vacancyResponsiblesResolver"
+            );
+            const vacName = projForNotif?.role_name || "Вакансия";
+            const modSummary = `Профессия: ${scoreByMod.professional ?? "—"} · Продукт: ${
+              scoreByMod.product ?? "—"
+            } · Системы: ${scoreByMod.systems ?? "—"}`;
+
+            // 1) Training progress notification (attempt & stage scores)
+            const { primaryLink: trainLink, responsibles: trainResp } = await dispatchVacancyBellAndPushToResponsibles(
+              db,
+              {
+                projectId: effPid || null,
+                projRow: projForNotif,
+                fallbackEmpId: candRow.employer_id || null,
+                eventKey: "training_progress",
+                kind: "training",
+                title: `Обучение (${stageLabel}): ${candName}`,
+                body: `Вакансия «${vacName}». ${totalEarned}/${Math.round(totalScore)} (${
+                  passed ? "Сдан" : "Не сдан"
+                }). Баллы: ${modSummary}.`,
+                linkBuilder: (pub) => `/emp${pub}/crm?candidate=${encodeURIComponent(String(candPub))}`,
+                meta: {
+                  candidate_id: String(candPub),
+                  stage: normStage,
+                  score: totalEarned,
+                  passed,
+                  scores: scoreByMod,
+                },
+              }
+            );
+
+            if (effPid && trainResp.length > 0) {
+              const { sendVacancyTelegramNotification } = await import("../../services/telegram");
+              await sendVacancyTelegramNotification(
+                db,
+                String(effPid),
+                `🎓 <b>Прохождение этапа обучения</b>\n👤 ${candName}\n💼 Вакансия: ${vacName}\n📘 ${stageLabel}\n📊 Текущий тест: <b>${totalEarned}/${Math.round(
+                  totalScore
+                )}</b> (${passed ? "Сдан" : "Не сдан"})\n📈 Модули — ${modSummary}`,
+                {
+                  eventKey: "training_progress",
+                  dedupKey: `train_${candPub}_${normStage}_${attemptNo || totalEarned}`,
+                  button: { text: "🎓 Открыть обучение в CRM", url: trainLink },
+                }
+              );
+            }
+
+            // 2) Certificate ready notification (interview + all 3 training stages passed)
+            if (isCert) {
+              const { primaryLink: certLink, responsibles: certResp } = await dispatchVacancyBellAndPushToResponsibles(
+                db,
+                {
+                  projectId: effPid || null,
+                  projRow: projForNotif,
+                  fallbackEmpId: candRow.employer_id || null,
+                  eventKey: "certificate_ready",
+                  kind: "certificate",
+                  title: `Сертификат Готов: ${candName}`,
+                  body: `Вакансия «${vacName}». Кандидат успешно прошёл ИИ-интервью и все 3 этапа обучения (${modSummary}).`,
+                  linkBuilder: (pub) => `/emp${pub}/crm?candidate=${encodeURIComponent(String(candPub))}`,
+                  meta: {
+                    candidate_id: String(candPub),
+                    certified: true,
+                    scores: scoreByMod,
+                  },
+                }
+              );
+
+              if (effPid && certResp.length > 0) {
+                const { sendVacancyTelegramNotification } = await import("../../services/telegram");
+                await sendVacancyTelegramNotification(
+                  db,
+                  String(effPid),
+                  `🏆 <b>Сертификат Готов!</b>\n👤 ${candName}\n💼 Вакансия: ${vacName}\n✅ Интервью и все 3 этапа обучения успешно пройдены.\n📈 Баллы — ${modSummary}`,
+                  {
+                    eventKey: "certificate_ready",
+                    dedupKey: `cert_${candPub}`,
+                    button: { text: "🏆 Открыть сертификат в CRM", url: certLink },
+                  }
+                );
+              }
+            }
+          } catch {}
         }
       } catch (dbErr) {
         console.warn("[grade-training-quiz] Candidate progress write notice:", dbErr);

@@ -456,11 +456,11 @@ export default function LandingPage() {
 
       {/* Footer */}
       <footer className="bg-transparent text-white py-12 px-4 md:px-8 border-t border-[#E7C768]/40 text-sm">
-        <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-8 text-left">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 text-left items-start">
           {/* Бренд */}
-          <div className="space-y-3">
+          <div className="space-y-3 lg:col-span-3">
             <div className="flex items-center gap-3">
-              <RRImage src={DEFAULT_RR_LOGO_URL} w={40} alt="Логотип Робот Рекрутер" className="w-10 h-10 object-contain" referrerPolicy="no-referrer" />
+              <RRImage src={DEFAULT_RR_LOGO_URL} w={40} alt="Логотип Робот Рекрутер" className="w-10 h-10 object-contain shrink-0" referrerPolicy="no-referrer" />
               <div className="font-bold text-sm text-[#E7C768]">
                 © 2026 Робот Рекрутер {appVersion}
                 <span className="text-sm text-slate-300 block font-normal mt-0.5">Полная автоматизация интервью и обучения</span>
@@ -468,40 +468,57 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Реквизиты */}
-          <div className="space-y-2 text-sm text-slate-300 leading-relaxed md:col-span-2">
-            <h3 className="text-sm tracking-widest text-[#E7C768] font-mono font-bold">Реквизиты</h3>
+          {/* Реквизиты и правовые документы */}
+          <div className="space-y-2 text-sm text-slate-300 leading-relaxed lg:col-span-4">
+            <h3 className="text-sm tracking-wide text-[#E7C768] font-mono font-bold">Реквизиты</h3>
             <p className="font-bold text-white">ООО «РентРоп»</p>
             <p>Юридический адрес: 115191, г. Москва, пер. Духовской, д. 17, стр. 15, помещ. 11Н/2</p>
             <p>ОГРН: 1217700234157 · ИНН: 7726477438</p>
             <p>
-              E-mail: <a href="mailto:info@arenda-ropa.com" className="text-[#E7C768] hover:underline">info@arenda-ropa.com</a> ·{" "}
-              <a href="/offer" className="text-[#E7C768] hover:underline">Публичная оферта</a>
+              E-mail: <a href="mailto:info@arenda-ropa.com" className="text-[#E7C768] hover:underline">info@arenda-ropa.com</a>
             </p>
-            <p className="text-sm text-slate-400 pt-1">Принимаем к оплате: МИР · Visa · Mastercard</p>
+            <nav aria-label="Правовые документы" className="flex flex-wrap gap-x-4 gap-y-1.5 pt-1 text-sm">
+              <a href="/offer" className="text-[#E7C768] hover:underline">Публичная оферта</a>
+              <a href="/privacy" className="text-[#E7C768] hover:underline">Политика конфиденциальности</a>
+              <a href="/terms" className="text-[#E7C768] hover:underline">Пользовательское соглашение</a>
+              <a href="/consent" className="text-[#E7C768] hover:underline">Согласие на обработку персональных данных</a>
+            </nav>
+            <p className="text-sm text-slate-300 pt-1">Принимаем к оплате: МИР · Visa · Mastercard</p>
           </div>
 
-          {/* Кнопки продукта без заголовка "Продукт компании" */}
-          <div className="space-y-3 flex flex-col justify-center">
-            <div className="flex flex-col gap-3">
-              <a
-                href="https://rent-rop.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 bg-gradient-to-r from-[#F4EE8E] to-[#D99E41] text-[#1A1A1A] font-bold text-sm px-5 py-3 rounded-xl shadow transition hover:-translate-y-0.5"
-              >
-                Продукт компании РентРОП
-              </a>
+          {/* Кнопки экосистемы и поддержки */}
+          <div className="lg:col-span-5 w-full">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              {[
+                { label: "Аренда РОПа", href: "https://rent-rop.com" },
+                { label: "ИИSMM", href: "https://iismm.ru/" },
+                { label: "ИИ-Ревизор", href: "https://ii-rr.ru/" },
+                { label: "ИИ-Викторины", href: "https://qaiz.ru/" },
+                { label: "АлхимИИ", href: "https://aihim.ru/" },
+                { label: "ИИ-Разработка", href: "https://sav-ai.ru/" },
+                { label: "Канал про ИИ", href: "https://t.me/SAV_AI" },
+                { label: "AI РОП", href: "https://rent-rop.com/ii-dlya-otdela-prodazh/" },
+              ].map((item) => (
+                <a
+                  key={item.label}
+                  href={item.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center text-center bg-gradient-to-r from-[#F4EE8E] to-[#D99E41] text-[#1A1A1A] font-bold text-sm px-3 py-3 rounded-xl shadow transition hover:-translate-y-0.5 leading-tight break-words"
+                >
+                  {item.label}
+                </a>
+              ))}
               <a
                 href="https://t.me/+Qr9hu55w7tEwNjZi"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 bg-gradient-to-r from-[#F4EE8E] to-[#D99E41] text-[#1A1A1A] font-bold text-sm px-5 py-3 rounded-xl shadow transition hover:-translate-y-0.5"
+                className="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 text-center bg-gradient-to-r from-[#F4EE8E] to-[#D99E41] text-[#1A1A1A] font-bold text-sm px-3 py-3 rounded-xl shadow transition hover:-translate-y-0.5 leading-tight"
               >
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0Zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.062 3.345-.479.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.831-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635Z" />
                 </svg>
-                Чат техподдержки
+                <span>Чат техподдержки</span>
               </a>
             </div>
           </div>

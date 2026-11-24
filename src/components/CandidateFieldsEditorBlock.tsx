@@ -19,7 +19,9 @@ import {
   Save,
   ChevronDown,
   ChevronUp,
+  AlertCircle,
 } from "lucide-react";
+import { getAuthHeaders } from "@/lib/dbClient";
 
 interface CandidateFieldsEditorBlockProps {
   candidate?: any;
@@ -111,7 +113,7 @@ export const CandidateFieldsEditorBlock: React.FC<CandidateFieldsEditorBlockProp
   const [customFieldDefs, setCustomFieldDefs] = useState<CustomCandidateFieldDef[]>(parsedConfigDefs);
   const [isEditing, setIsEditing] = useState<boolean>(defaultEditing);
   const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [activeSection, setActiveSection] = useState<"all" | "filled" | "custom">("all");
   const [newOptionInputs, setNewOptionInputs] = useState<Record<string, string>>({});
   const [showAddCustomFieldForm, setShowAddCustomFieldForm] = useState(false);
@@ -218,17 +220,17 @@ export const CandidateFieldsEditorBlock: React.FC<CandidateFieldsEditorBlockProp
       if (persistToDb && targetId) {
         const res = await fetch(`/api/candidates/${encodeURIComponent(String(targetId))}/fields`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: getAuthHeaders(),
           body: JSON.stringify({
             standardFields,
             customFields,
           }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data?.error || "Не удалось сохранить поля кандидата");
         }
-        setSaveMessage("Данные профиля успешно сохранены в базе данных.");
+        setSaveMessage({ type: "success", text: "Данные профиля успешно сохранены в базе данных." });
         setIsEditing(false);
         if (onSaved) {
           onSaved({
@@ -239,7 +241,7 @@ export const CandidateFieldsEditorBlock: React.FC<CandidateFieldsEditorBlockProp
           });
         }
       } else {
-        setSaveMessage("Изменения применены.");
+        setSaveMessage({ type: "success", text: "Изменения применены." });
         setIsEditing(false);
         if (onSaved) {
           onSaved({
@@ -250,10 +252,10 @@ export const CandidateFieldsEditorBlock: React.FC<CandidateFieldsEditorBlockProp
         }
       }
     } catch (err: any) {
-      setSaveMessage(err?.message || "Ошибка при сохранении");
+      setSaveMessage({ type: "error", text: err?.message || "Ошибка при сохранении" });
     } finally {
       setIsSaving(false);
-      setTimeout(() => setSaveMessage(null), 4000);
+      setTimeout(() => setSaveMessage(null), 5000);
     }
   };
 
@@ -340,9 +342,19 @@ export const CandidateFieldsEditorBlock: React.FC<CandidateFieldsEditorBlockProp
       </div>
 
       {saveMessage && (
-        <div className="p-3 rounded-xl border border-[#d4af37] backdrop-blur-xl text-[#fceabb] text-[14px] flex items-center gap-2">
-          <Check className="w-4 h-4 shrink-0 text-[#d4af37]" />
-          <span className="break-words">{saveMessage}</span>
+        <div
+          className={`p-3 rounded-xl border backdrop-blur-xl text-[14px] flex items-center gap-2 ${
+            saveMessage.type === "error"
+              ? "border-white/40 text-white"
+              : "border-[#d4af37] text-[#fceabb]"
+          }`}
+        >
+          {saveMessage.type === "error" ? (
+            <AlertCircle className="w-4 h-4 shrink-0 text-[#d4af37]" />
+          ) : (
+            <Check className="w-4 h-4 shrink-0 text-[#d4af37]" />
+          )}
+          <span className="break-words">{saveMessage.text}</span>
         </div>
       )}
 

@@ -7,27 +7,18 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { dbClient } from "@/lib/dbClient";
-import RichMarkdown from "@/components/RichMarkdown";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { adaptEmployerChecklist, adaptEmployerSituations } from "@/lib/feedbackAdapters";
-import EmployerChecklistReport from "@/components/reports/EmployerChecklistReport";
-import EmployerSituationsReport from "@/components/reports/EmployerSituationsReport";
-import EmployerOverallReport from "@/components/reports/EmployerOverallReport";
 import EmployerOverallSummary from "@/components/reports/EmployerOverallSummary";
-import EmployerTrainingStageReport from "@/components/reports/EmployerTrainingStageReport";
-import EmployerTrainingSummaryReport from "@/components/reports/EmployerTrainingSummaryReport";
-import { scoreTone as toneFor, formatScore as toneFormat, type Tone } from "@/lib/scoreTone";
-import { buildStageQuestionMap, type StageQuestionMap } from "@/lib/trainingStageMerge";
+import { DecisionSection } from "@/components/crm/decisions/DecisionSection";
+import { CandidateTrainingTab } from "@/components/crm/CandidateTrainingTab";
 import {
-  startOverallCandidateV2, pollEmployerJobUntilTerminal,
-  getEmployerActiveJob, clearEmployerActiveJob, fetchEmployerJobStatus,
-  isTerminal, isSuccess,
-} from "@/lib/aiJobs";
-import { diagLog, extractInvokeError, tail } from "@/lib/diagLog";
-import { aiChat } from "@/lib/aiClient";
-import { Sparkles } from "lucide-react";
+  EmployerResumeReportView,
+  ChecklistTabContent,
+  SituationsTabContent,
+} from "@/components/crm/CandidateInterviewTabs";
+import { scoreTone as toneFor, type Tone } from "@/lib/scoreTone";
+import { buildStageQuestionMap, type StageQuestionMap } from "@/lib/trainingStageMerge";
 import { CandidateFieldsEditorBlock } from "@/components/CandidateFieldsEditorBlock";
 import { useLandingTheme } from "./LandingStyleEditor";
 
@@ -123,209 +114,10 @@ class CandidateBodyErrorBoundary extends React.Component<
   }
 }
 
-/** Map raw job status / thrown error codes to user-facing copy. */
-function humanizeAiError(code: string | null | undefined): string {
-  const s = String(code || "").toLowerCase();
-  if (!s) return "";
-  if (s.includes("source_data_changed"))
-    return "Данные кандидата изменились во время анализа. Запустите пересчёт ещё раз.";
-  if (s === "validation_failed" || s.startsWith("schema_invalid"))
-    return "ИИ вернул некорректный отчёт. Запустите пересчёт ещё раз.";
-  if (s === "save_failed") return "Не удалось сохранить отчёт. Попробуйте позже.";
-  if (s === "fallback_failed" || s === "primary_failed")
-    return "ИИ-провайдеры временно недоступны. Повторите попытку чуть позже.";
-  if (s === "orchestration_failed") return "Внутренняя ошибка. Попробуйте позже.";
-  if (s === "runtime_no_background") return "Среда временно недоступна. Попробуйте позже.";
-  if (s === "forbidden" || s === "candidate_not_found")
-    return "Нет доступа к этому кандидату.";
-  return "Не удалось сформировать общую AI-оценку.";
-}
 import {
-  X, User as UserIcon, Mail, Phone, MessageSquare, FileText,
-  CheckSquare, Briefcase, GraduationCap, Loader2, ExternalLink, Award,
-  Building2, UserCheck, UserX, ChevronDown, ChevronUp, Clock, RefreshCw
+  X, User as UserIcon, Mail, Phone, Briefcase, Loader2, ExternalLink,
+  Building2, ChevronDown,
 } from "lucide-react";
-
-/**
- * Employer-facing structured resume report (v2 / Phase 3B-2A).
- * Renders matches / gaps / strengths / risks / red_flags / questions_to_verify
- * when the new schema is present; falls back to the legacy {summary,strengths,
- * gaps} shape from the old synchronous function.
- *
- * IMPORTANT: this view is the ONLY place that shows employer-only fields
- * (verdict, risks, red_flags, questions_to_verify, employer_wishes). The
- * candidate cabinet must NEVER render these.
- */
-function EmployerResumeReportView({ score, feedback, fallbackSummary, resumeText }: {
-  score: any; feedback: any; fallbackSummary?: string | null; resumeText?: string | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const hasFeedback = feedback && typeof feedback === "object" && !Array.isArray(feedback);
-  const isV2 = hasFeedback && typeof (feedback as any).verdict === "string";
-  const tone = scoreTone(score);
-
-  const renderBody = () => {
-    if (!hasFeedback && !fallbackSummary && !resumeText) {
-      return (
-        <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-6 text-center text-[14px] text-white/70">
-          Резюме ещё не загружено и не оценено ИИ.
-        </div>
-      );
-    }
-    if (!isV2) {
-      // Legacy fallback: old schema {summary,strengths,gaps} OR just a text summary.
-      const f: any = hasFeedback ? feedback : {};
-      const summary = f.summary || fallbackSummary || "";
-      const strengths = Array.isArray(f.strengths) ? f.strengths : [];
-      const gaps      = Array.isArray(f.gaps) ? f.gaps : [];
-      return (
-        <div className="space-y-3">
-          {summary && (
-            <div className={`text-[14px] rounded-xl p-4 border ${toneBg(tone.label)} text-white`}>
-              <div className="text-[14px] font-mono text-[#E7C768] mb-1">Резюме оценил ИИ</div>
-              <RichMarkdown tone="resume">{summary}</RichMarkdown>
-            </div>
-          )}
-          {strengths.length > 0 && (
-            <div className="bg-transparent backdrop-blur-xl border border-[#d4af37]/40 rounded-xl p-4">
-              <div className="text-[14px] font-mono text-[#E7C768] mb-1">Сильные стороны</div>
-              <ul className="text-[14px] text-white/90 list-disc pl-5 space-y-1">{strengths.map((x: any, i: number) => <li key={i}>{String(x)}</li>)}</ul>
-            </div>
-          )}
-          {gaps.length > 0 && (
-            <div className="bg-transparent backdrop-blur-xl border border-white/20 rounded-xl p-4">
-              <div className="text-[14px] font-mono text-white/80 mb-1">Пробелы</div>
-              <ul className="text-[14px] text-white/90 list-disc pl-5 space-y-1">{gaps.map((x: any, i: number) => <li key={i}>{String(x)}</li>)}</ul>
-            </div>
-          )}
-        </div>
-      );
-    }
-    const f: any = feedback;
-    const matches  = Array.isArray(f.matches) ? f.matches : [];
-    const gaps     = Array.isArray(f.gaps) ? f.gaps : [];
-    const strengths= Array.isArray(f.strengths) ? f.strengths : [];
-    const risks    = Array.isArray(f.risks) ? f.risks : [];
-    const redFlags = Array.isArray(f.red_flags) ? f.red_flags : [];
-    const questions= Array.isArray(f.questions_to_verify) ? f.questions_to_verify : [];
-    return (
-      <div className="space-y-3">
-        <div className={`rounded-xl p-4 border ${toneBg(tone.label)} text-white space-y-1.5`}>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[14px] font-mono text-[#E7C768]">Вердикт</span>
-            <span className={`text-[14px] font-bold ${tone.cls}`}>{String(f.verdict || "—")}</span>
-            {Number.isFinite(Number(score)) && (
-              <span className={`text-[14px] font-mono font-black ml-auto ${tone.cls}`}>{Math.round(Number(score))}/100</span>
-            )}
-          </div>
-          <div className="text-[14px] leading-relaxed text-white">
-            <RichMarkdown tone="resume">{String(f.summary || "")}</RichMarkdown>
-          </div>
-        </div>
-        {matches.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-[#d4af37]/40 rounded-xl p-4 space-y-1.5">
-            <div className="text-[14px] font-mono text-[#E7C768]">Соответствия требованиям</div>
-            <ul className="space-y-1.5">
-              {matches.map((m: any, i: number) => (
-                <li key={i} className="text-[14px] text-white/90">
-                  <div className="font-semibold text-white">{m.criterion} <span className="text-[14px] font-mono text-[#fceabb] ml-1">{m.degree}</span></div>
-                  {m.evidence && <div className="text-white/80 text-[14px] mt-0.5">{m.evidence}</div>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {gaps.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-white/20 rounded-xl p-4 space-y-1.5">
-            <div className="text-[14px] font-mono text-white/80">Пробелы и расхождения</div>
-            <ul className="space-y-1.5">
-              {gaps.map((g: any, i: number) => (
-                <li key={i} className="text-[14px] text-white/90">
-                  <div className="font-semibold text-white">{g.criterion}</div>
-                  {g.finding && <div className="text-white/80 text-[14px] mt-0.5">{g.finding}</div>}
-                  {g.impact && <div className="text-[14px] italic text-[#fceabb]">Влияние: {g.impact}</div>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {strengths.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-[#d4af37]/40 rounded-xl p-4">
-            <div className="text-[14px] font-mono text-[#E7C768] mb-1">Сильные стороны</div>
-            <ul className="text-[14px] text-white/90 list-disc pl-5 space-y-1">{strengths.map((x: any, i: number) => <li key={i}>{String(x)}</li>)}</ul>
-          </div>
-        )}
-        {risks.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-white/20 rounded-xl p-4 space-y-1.5">
-            <div className="text-[14px] font-mono text-white/80">Риски</div>
-            <ul className="space-y-1.5">
-              {risks.map((r: any, i: number) => (
-                <li key={i} className="text-[14px] text-white/90">
-                  <div className="font-semibold text-white">{r.title} <span className="text-[14px] font-mono text-[#fceabb] ml-1">{r.severity}</span></div>
-                  {r.evidence && <div className="text-white/80 text-[14px] mt-0.5">Свидетельство: {r.evidence}</div>}
-                  {r.how_to_verify && <div className="text-[14px] italic text-white/70">Как проверить: {r.how_to_verify}</div>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {redFlags.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-white/30 rounded-xl p-4 space-y-1.5">
-            <div className="text-[14px] font-mono text-[#E7C768]">Особые отметки</div>
-            <ul className="space-y-1.5">
-              {redFlags.map((r: any, i: number) => (
-                <li key={i} className="text-[14px] text-white/90">
-                  <div className="font-semibold text-white">{r.title} <span className="text-[14px] font-mono text-white/70 ml-1">{r.severity}</span></div>
-                  {r.evidence && <div className="text-white/80 text-[14px] mt-0.5">{r.evidence}</div>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {questions.length > 0 && (
-          <div className="bg-transparent backdrop-blur-xl border border-[#d4af37]/30 rounded-xl p-4">
-            <div className="text-[14px] font-mono text-[#E7C768] mb-1">Что проверить на интервью</div>
-            <ul className="text-[14px] text-white/90 list-disc pl-5 space-y-1">{questions.map((q: any, i: number) => <li key={i}>{String(q)}</li>)}</ul>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-4">
-      {renderBody()}
-      {resumeText && (
-        <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl">
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="w-full flex items-center justify-between px-4 py-3 text-[14px] font-mono text-white/80 hover:text-white"
-          >
-            <span className="flex items-center gap-2"><FileText className="w-4 h-4 text-[#E7C768]" /> Распознанный текст резюме</span>
-            {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
-          {open && (
-            <div className="px-4 pb-4 text-[14px] text-white/90 leading-relaxed max-h-96 overflow-y-auto">
-              <RichMarkdown tone="resume">{resumeText}</RichMarkdown>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const STAGE_LABELS: Record<string, string> = {
-  registration: "Регистрация",
-  screening: "Скрининг",
-  checklist: "Чеклист",
-  situations: "Ситуации",
-  professional: "Профессия",
-  product: "Продукт",
-  systems: "Система",
-  certified: "Сертификат",
-};
 
 /**
  * Backwards-compatible wrappers around the shared scoreTone helper so the
@@ -414,19 +206,7 @@ function CandidateDetailsModalInner({
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [decisionOpen, setDecisionOpen] = useState<null | "invited" | "review" | "rejected">(null);
-  const [decisionMsg, setDecisionMsg] = useState("");
-  const [decisionSaving, setDecisionSaving] = useState(false);
-  const [decisionErr, setDecisionErr] = useState<string | null>(null);
-  const [decisionTone, setDecisionTone] = useState<"warm"|"formal"|"friendly"|"short">("warm");
-  const [decisionGenerating, setDecisionGenerating] = useState(false);
-  const [reviewSaving, setReviewSaving] = useState(false);
-  const [overallSaving, setOverallSaving] = useState(false);
-  const [overallErr, setOverallErr] = useState<string | null>(null);
-  const [overallStatus, setOverallStatus] = useState<string>("");
   const [trainingSummary, setTrainingSummary] = useState<any>(null);
-  const [trainingSummaryLoading, setTrainingSummaryLoading] = useState(false);
-  const [trainingSummaryErr, setTrainingSummaryErr] = useState<string | null>(null);
   const [stageQuestionMap, setStageQuestionMap] = useState<StageQuestionMap | null>(null);
   const [stagePassScoreMap, setStagePassScoreMap] = useState<Record<string, number>>({});
   const [activeTab, setActiveTab] = useState<string>("general");
@@ -475,70 +255,6 @@ function CandidateDetailsModalInner({
     return () => { cancelled = true; };
   }, [projectIdForTests]);
 
-  const recomputeTrainingSummary = async () => {
-    if (!candidateId) return;
-    const ctail = tail(candidateId);
-    diagLog("training_summary_btn", "click_started", { candidate_id_tail: ctail });
-    setTrainingSummaryLoading(true);
-    setTrainingSummaryErr(null);
-    try {
-      const { data: { session } } = await dbClient.auth.getSession();
-      diagLog("training_summary_btn", "session_present", { session: session?.access_token ? "yes" : "no", candidate_id_tail: ctail });
-      if (!session?.access_token) {
-        const code = "summary_no_session";
-        diagLog("training_summary_btn", "invoke_error", { code, candidate_id_tail: ctail });
-        setTrainingSummaryErr(`Не удалось сформировать итог. Войдите заново. Код: ${code}`);
-        return;
-      }
-      diagLog("training_summary_btn", "invoke_started", { candidate_id_tail: ctail });
-      const { data, error } = await dbClient.functions.invoke("ai-evaluate-training-summary-v2", {
-        body: { candidate_id: candidateId },
-      });
-      if (error) {
-        const { code, http_status } = await extractInvokeError(error);
-        diagLog("training_summary_btn", "invoke_error", { code, http_status, candidate_id_tail: ctail });
-        setTrainingSummaryErr(`Не удалось сформировать итог. Код: summary_invoke_${http_status ?? code}`);
-        return;
-      }
-      const dataErr = (data as any)?.error;
-      if (dataErr) {
-        const code = String(dataErr).slice(0, 64);
-        diagLog("training_summary_btn", "invoke_error", { code, candidate_id_tail: ctail });
-        setTrainingSummaryErr(`Не удалось сформировать итог. Код: summary_${code}`);
-        return;
-      }
-      diagLog("training_summary_btn", "invoke_success", { candidate_id_tail: ctail });
-      await loadTrainingSummary();
-      diagLog("training_summary_btn", "terminal", { terminal_status: "ok", candidate_id_tail: ctail });
-    } catch (e: any) {
-      const code = String(e?.message || "unknown").slice(0, 64);
-      diagLog("training_summary_btn", "unhandled_error", { code, candidate_id_tail: ctail });
-      setTrainingSummaryErr(`Не удалось сформировать итог. Код: summary_${code}`);
-    } finally {
-      setTrainingSummaryLoading(false);
-    }
-  };
-
-  const markReview = async () => {
-    if (!candidateId) return;
-    setReviewSaving(true);
-    setDecisionErr(null);
-    try {
-      const { error } = await (dbClient as any).rpc("candidate_invite_decision", {
-        _candidate: candidateId,
-        _decision: "review",
-        _message: "Кандидат взят на дополнительное рассмотрение.",
-      });
-      if (error) throw error;
-      const { data: fresh } = await dbClient.rpc("candidate_full_details" as any, { _candidate: candidateId });
-      setData(fresh);
-    } catch (e: any) {
-      setDecisionErr(e?.message || "Не удалось поставить статус «На рассмотрении»");
-    } finally {
-      setReviewSaving(false);
-    }
-  };
-
   useEffect(() => {
     if (!candidateId) return;
     let cancelled = false;
@@ -554,31 +270,6 @@ function CandidateDetailsModalInner({
   }, [candidateId]);
 
   if (!candidateId) return null;
-
-  const submitDecision = async () => {
-    if (!candidateId || !decisionOpen) return;
-    setDecisionSaving(true); setDecisionErr(null);
-    try {
-      const { error } = await (dbClient as any).rpc("candidate_invite_decision", {
-        _candidate: candidateId,
-        _decision: decisionOpen,
-        _message: decisionMsg.trim() || null,
-      });
-      if (error) throw error;
-      // refresh
-      const { data: fresh } = await dbClient.rpc("candidate_full_details" as any, { _candidate: candidateId });
-      const savedDecision = decisionOpen;
-      const savedMsg = decisionMsg.trim();
-      setData(fresh);
-      setDecisionOpen(null);
-      setDecisionMsg("");
-      onDecisionChange?.(candidateId, savedDecision, savedMsg);
-    } catch (e: any) {
-      setDecisionErr(e?.message || "Не удалось сохранить решение");
-    } finally {
-      setDecisionSaving(false);
-    }
-  };
 
   const c = data?.candidate || {};
   const p = data?.profile || {};
@@ -600,8 +291,6 @@ function CandidateDetailsModalInner({
 
   const checklistFeedbackParsed = tryJson(s.checklist_feedback);
   const situationsFeedbackParsed = tryJson(s.situations_feedback);
-  const overallFeedbackParsed = tryJson(s.employer_overall_feedback);
-  const trainingFeedbackParsed = tryJson(s.training_employer_feedback) || tryJson(data?.training_summary?.training_employer_feedback);
 
   // Split answers by question category. The DB enum question_category has
   // values: checklist_prof, checklist_sys, train_prof, train_product,
@@ -704,128 +393,6 @@ function CandidateDetailsModalInner({
     }));
   }
 
-  /**
-   * Phase 4 — overall AI candidate evaluation via the async v2 lifecycle.
-   *
-   * The button:
-   *  - mints ONE request_id per click (`crypto.randomUUID`);
-   *  - blocks double-click via `overallSaving`;
-   *  - calls `ai-evaluate-overall-candidate-v2` (employer JWT);
-   *  - polls `get_ai_job_safe_status` RPC until terminal;
-   *  - re-reads candidate_full_details on success;
-   *  - shows safe error on failure (terminal failures need a NEW request_id
-   *    to retry, which means another button click).
-   *
-   * No RR billing, no overwrite of `overall_score`, no overwrite of
-   * `assessment_summary` — the v2 RPC only touches the new fit fields.
-   */
-  const runOverallEvaluation = async () => {
-    if (!candidateId || overallSaving) return;
-    const ctail = tail(candidateId);
-    diagLog("overall_btn", "click_started", { candidate_id_tail: ctail });
-    setOverallSaving(true);
-    setOverallErr(null);
-    setOverallStatus("primary_running");
-    let requestId = "";
-    let jobId = "";
-    let firstStatus = "";
-    let lastStatus = "";
-    try {
-      // Pre-check database auth session (employer JWT).
-      const { data: { session } } = await dbClient.auth.getSession();
-      diagLog("overall_btn", "session_present", { session: session?.access_token ? "yes" : "no", candidate_id_tail: ctail });
-      if (!session?.access_token) {
-        const code = "overall_no_session";
-        diagLog("overall_btn", "invoke_error", { code, candidate_id_tail: ctail });
-        setOverallErr(`Не удалось запустить анализ. Войдите заново. Код: ${code}`);
-        return;
-      }
-      diagLog("overall_btn", "invoke_started", { candidate_id_tail: ctail });
-      let started;
-      try {
-        started = await startOverallCandidateV2({ candidateId });
-      } catch (invokeErr: any) {
-        const { code, http_status } = await extractInvokeError(invokeErr);
-        diagLog("overall_btn", "invoke_error", { code, http_status, candidate_id_tail: ctail });
-        setOverallErr(`Не удалось запустить анализ. Код: overall_invoke_${http_status ?? code}`);
-        return;
-      }
-      requestId = started.request_id;
-      jobId = started.job_id;
-      firstStatus = started.status;
-      lastStatus = started.status;
-      diagLog("overall_btn", "invoke_success", {
-        request_id: requestId, job_id: jobId, first_status: firstStatus,
-        candidate_id_tail: ctail,
-      });
-      if (started.terminal) {
-        // Reused terminal — just refetch and surface the state.
-        if (!isSuccess(started.status)) {
-          setOverallErr(humanizeAiError(started.status));
-        }
-        clearEmployerActiveJob("overall_candidate", candidateId);
-        diagLog("overall_btn", "terminal", { job_id: jobId, terminal_status: started.status, candidate_id_tail: ctail });
-      } else {
-        const final = await pollEmployerJobUntilTerminal({
-          jobId: started.job_id,
-          onTick: (row) => { lastStatus = row.status; setOverallStatus(row.status); },
-        });
-        clearEmployerActiveJob("overall_candidate", candidateId);
-        diagLog("overall_btn", "terminal", {
-          job_id: jobId, terminal_status: final.status, last_status: lastStatus,
-          candidate_id_tail: ctail,
-        });
-        if (!isSuccess(final.status)) {
-          setOverallErr(`${humanizeAiError(final.status)} Код: overall_${final.status}`);
-        }
-      }
-      const { data: fresh } = await dbClient.rpc("candidate_full_details" as any, { _candidate: candidateId });
-      setData(fresh);
-    } catch (e: any) {
-      const code = String(e?.message || "unknown").slice(0, 64);
-      diagLog("overall_btn", "unhandled_error", { code, job_id: jobId, candidate_id_tail: ctail });
-      setOverallErr(`Не удалось запустить анализ. Код: overall_${code}`);
-    } finally {
-      setOverallSaving(false);
-      setOverallStatus("");
-    }
-  };
-
-  // Restore an in-flight overall job if the modal was closed while polling.
-  useEffect(() => {
-    if (!candidateId) return;
-    const rec = getEmployerActiveJob("overall_candidate", candidateId);
-    if (!rec) return;
-    let cancelled = false;
-    (async () => {
-      const row = await fetchEmployerJobStatus(rec.job_id);
-      if (cancelled) return;
-      if (!row) { clearEmployerActiveJob("overall_candidate", candidateId); return; }
-      if (isTerminal(row.status)) {
-        clearEmployerActiveJob("overall_candidate", candidateId);
-        return;
-      }
-      setOverallSaving(true);
-      setOverallStatus(row.status);
-      try {
-        const final = await pollEmployerJobUntilTerminal({
-          jobId: rec.job_id,
-          onTick: (r) => !cancelled && setOverallStatus(r.status),
-        });
-        if (cancelled) return;
-        clearEmployerActiveJob("overall_candidate", candidateId);
-        if (!isSuccess(final.status)) setOverallErr(humanizeAiError(final.status));
-        const { data: fresh } = await dbClient.rpc("candidate_full_details" as any, { _candidate: candidateId });
-        if (!cancelled) setData(fresh);
-      } catch (e: any) {
-        if (!cancelled) setOverallErr(humanizeAiError(e?.message || "poll_failed"));
-      } finally {
-        if (!cancelled) { setOverallSaving(false); setOverallStatus(""); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [candidateId]);
-
   const name = c.full_name || c.resume_name || p.display_name || c.email || `Кандидат #${c.public_id || ""}`;
   const photo = p.avatar_url;
   const initials = (name || "?").split(/\s+/).slice(0, 2).map((x: string) => x[0]).join("").toUpperCase();
@@ -895,9 +462,19 @@ function CandidateDetailsModalInner({
                       {overallBadge.text}
                     </span>
                   )}
+                  {c.hire_decision === "invited" && (
+                    <span className="px-3 py-1 rounded-full text-[14px] font-bold border border-[#d4af37] bg-transparent text-[#fceabb] backdrop-blur-md shadow-[0_0_12px_rgba(212,175,55,0.25)]">
+                      Приглашён на работу
+                    </span>
+                  )}
                   {c.hire_decision === "review" && (
                     <span className="px-3 py-1 rounded-full text-[14px] font-bold border border-[#d4af37]/60 bg-transparent text-[#fceabb] backdrop-blur-md">
                       На рассмотрении
+                    </span>
+                  )}
+                  {c.hire_decision === "rejected" && (
+                    <span className="px-3 py-1 rounded-full text-[14px] font-bold border border-white/30 bg-transparent text-white/85 backdrop-blur-md">
+                      Отказано
                     </span>
                   )}
                 </div>
@@ -936,247 +513,28 @@ function CandidateDetailsModalInner({
               <Score label="Средний балл" value={s.overall_score} />
             </div>
 
-            {/* Hire decision block */}
-            <div className="bg-transparent backdrop-blur-xl border border-[#E7C768]/40 rounded-2xl p-5 space-y-4 shadow-lg">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <h3 className="text-[14px] font-bold text-[#E7C768] tracking-wide flex items-center gap-2">
-                  <UserCheck className="w-4 h-4 text-[#E7C768]" /> Решение по кандидату
-                </h3>
-                {c.hire_decision && (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-[14px] font-bold backdrop-blur-md ${
-                      c.hire_decision === "invited"
-                        ? "bg-transparent text-white border border-[#d4af37] shadow-[0_0_12px_rgba(212,175,55,0.25)]"
-                        : c.hire_decision === "review"
-                          ? "bg-transparent text-[#fceabb] border border-[#d4af37]/60 shadow-[0_0_12px_rgba(212,175,55,0.2)]"
-                          : "bg-transparent text-white/80 border border-white/30"
-                    }`}>
-                      {c.hire_decision === "invited"
-                        ? <><UserCheck className="w-4 h-4 text-[#d4af37]" /> Приглашён на работу</>
-                        : c.hire_decision === "review"
-                          ? <><Clock className="w-4 h-4 text-[#d4af37]" /> На рассмотрении</>
-                          : <><UserX className="w-4 h-4 text-white/70" /> Отказано</>}
-                    </div>
-                    {c.hire_decided_at && (
-                      <div className="text-[14px] text-white/60 font-mono">
-                        {new Date(c.hire_decided_at).toLocaleString("ru-RU")}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {c.hire_message && (
-                <div className="bg-transparent backdrop-blur-md rounded-xl border border-white/15 p-3.5 text-[14px] text-white/95 whitespace-pre-wrap leading-relaxed">
-                  <div className="text-[14px] font-mono text-white/60 mb-1">Отправленное сообщение кандидату:</div>
-                  {c.hire_message}
-                </div>
-              )}
-
-              {/* 3 Interactive Decision Buttons */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDecisionOpen("invited");
-                    const candName = c.full_name || c.resume_name || "кандидат";
-                    const role = pr.role_name || "вакансию";
-                    setDecisionMsg(c.hire_decision === "invited" && c.hire_message ? c.hire_message : `Здравствуйте, ${candName}! Мы внимательно ознакомились с вашим резюме и результатами отбора на позицию «${role}». Рады сообщить, что мы приняли положительное решение и приглашаем вас на работу в нашу команду! В ближайшее время свяжемся с вами для согласования даты выхода.`);
-                  }}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-[14px] transition-all shadow-md backdrop-blur-md ${
-                    c.hire_decision === "invited"
-                      ? "border border-[#d4af37] bg-transparent text-[#fceabb] shadow-[0_0_15px_rgba(212,175,55,0.3)] ring-1 ring-[#d4af37]"
-                      : "border border-white/20 hover:border-[#d4af37] bg-transparent text-white hover:text-[#fceabb]"
-                  }`}
-                >
-                  <UserCheck className="w-4 h-4 text-[#d4af37]" /> Пригласить на работу
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDecisionOpen("review");
-                    const candName = c.full_name || c.resume_name || "кандидат";
-                    const role = pr.role_name || "вакансию";
-                    setDecisionMsg(c.hire_decision === "review" && c.hire_message ? c.hire_message : `Здравствуйте, ${candName}! Ваша кандидатура на позицию «${role}» находится на рассмотрении руководства компании. Мы свяжемся с вами сразу после финализации решения.`);
-                  }}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-[14px] transition-all shadow-md backdrop-blur-md ${
-                    c.hire_decision === "review"
-                      ? "border border-[#d4af37] bg-transparent text-[#fceabb] shadow-[0_0_15px_rgba(212,175,55,0.3)] ring-1 ring-[#d4af37]"
-                      : "border border-white/20 hover:border-[#d4af37] bg-transparent text-white hover:text-[#fceabb]"
-                  }`}
-                >
-                  <Clock className="w-4 h-4 text-[#d4af37]" /> На рассмотрении
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDecisionOpen("rejected");
-                    const candName = c.full_name || c.resume_name || "кандидат";
-                    const role = pr.role_name || "вакансию";
-                    setDecisionMsg(c.hire_decision === "rejected" && c.hire_message ? c.hire_message : `Здравствуйте, ${candName}! Благодарим вас за интерес к вакансии «${role}» и время, уделённое отбору. В настоящий момент мы остановились на кандидате, чей опыт ближе к текущим задачам. Ваше резюме сохранено в резерве нашей компании.`);
-                  }}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-[14px] transition-all shadow-md backdrop-blur-md ${
-                    c.hire_decision === "rejected"
-                      ? "border border-white/60 bg-transparent text-white shadow-[0_0_15px_rgba(255,255,255,0.2)] ring-1 ring-white/60"
-                      : "border border-white/20 hover:border-white/50 bg-transparent text-white hover:text-white/80"
-                  }`}
-                >
-                  <UserX className="w-4 h-4 text-white/70" /> Отказать
-                </button>
-              </div>
-            </div>
-
-            {decisionOpen && typeof document !== "undefined" && createPortal(
-              <div
-                className="fixed inset-0 z-[100000] bg-transparent flex items-center justify-center p-3 sm:p-6"
-                onClick={() => !decisionSaving && setDecisionOpen(null)}
-              >
-                <div
-                  className="relative rounded-3xl shadow-2xl p-6 sm:p-8 w-full max-w-lg max-h-[90vh] overflow-y-auto text-white space-y-4 bg-transparent backdrop-blur-3xl border border-white/20"
-                  style={{
-                    backgroundColor: containerBgRgba && containerBgRgba !== "transparent" ? containerBgRgba : "transparent",
-                    backdropFilter: "blur(32px)",
-                    WebkitBackdropFilter: "blur(32px)",
-                    borderColor: containerBorderRgba || "rgba(255, 255, 255, 0.25)",
-                    borderWidth: "1px",
-                    borderStyle: "solid",
-                    boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5), 0 0 35px rgba(212,175,55,0.25)",
-                  }}
-                  onClick={e => e.stopPropagation()}
-                >
-                  <div className="flex items-center justify-between border-b border-white/15 pb-3">
-                    <h4 className="text-[17px] font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent">
-                      {decisionOpen === "invited"
-                        ? "Пригласить на работу"
-                        : decisionOpen === "review"
-                          ? "Поставить на рассмотрение"
-                          : "Отказать кандидату"}
-                    </h4>
-                    <button
-                      type="button"
-                      disabled={decisionSaving}
-                      onClick={() => setDecisionOpen(null)}
-                      className="text-white/60 hover:text-white p-1 rounded-lg"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  <p className="text-[14px] text-white/85">
-                    Кандидат получит личное уведомление с этим решением и текстом сообщения в личном кабинете.
-                  </p>
-
-                  <div className="space-y-2">
-                    <div className="text-[14px] text-white/75">Тон сообщения</div>
-                    <div className="flex flex-wrap gap-2 items-center">
-                      {([
-                        { k: "warm", label: "Тёплый" },
-                        { k: "formal", label: "Официальный" },
-                        { k: "friendly", label: "Дружелюбный" },
-                        { k: "short", label: "Краткий" },
-                      ] as const).map(t => (
-                        <button
-                          type="button"
-                          key={t.k}
-                          onClick={() => setDecisionTone(t.k)}
-                          className={`px-3 py-1.5 rounded-xl text-[14px] font-semibold border transition-all ${
-                            decisionTone === t.k
-                              ? "bg-[#E7C768]/25 border-[#E7C768] text-[#fceabb]"
-                              : "bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
-                          }`}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        disabled={decisionGenerating}
-                        onClick={async () => {
-                          setDecisionGenerating(true); setDecisionErr(null);
-                          try {
-                            const toneRu = { warm: "тёплый", formal: "официальный", friendly: "дружелюбный", short: "краткий" }[decisionTone];
-                            const candName = c.full_name || c.resume_name || "кандидат";
-                            const role = pr.role_name || "вакансия";
-                            const company = co.name || pr.company_name || "";
-                            const scoreLine = s?.overall_score ? `Средний балл интервью: ${Math.round(s.overall_score)}/100.` : "";
-                            const goal = decisionOpen === "invited"
-                              ? "Пригласи кандидата на работу. Сообщи, что решение положительное, поздравь и предложи связаться для обсуждения оформления."
-                              : decisionOpen === "review"
-                                ? "Сообщи кандидату, что его кандидатура взята на дополнительное рассмотрение руководством. Поблагодари за терпение."
-                                : "Вежливо откажи кандидату. Поблагодари за интерес и потраченное время. Не указывай жестких причин.";
-                            const prompt = `Составь короткое сообщение (3–5 предложений) кандидату в ${toneRu} тоне.
-Компания: ${company}. Вакансия: ${role}. Имя кандидата: ${candName}. ${scoreLine}
-${goal}
-Напиши только текст сообщения без пояснений и без мета-текста.`;
-                            const reply = await aiChat({
-                              kind: "employer",
-                              messages: [{ role: "user", content: prompt }],
-                              candidate_id: candidateId || undefined,
-                              project_id: (pr as any)?.id || undefined,
-                            });
-                            if (reply) setDecisionMsg(reply.trim());
-                          } catch (e: any) {
-                            setDecisionErr(e?.message || "Не удалось сгенерировать текст");
-                          } finally {
-                            setDecisionGenerating(false);
-                          }
-                        }}
-                        className="ml-auto px-3.5 py-1.5 rounded-xl text-[14px] font-bold bg-gradient-to-r from-[#E7C768] to-[#D99E41] text-[#17344F] inline-flex items-center gap-1.5 disabled:opacity-50 shadow"
-                      >
-                        {decisionGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                        Сгенерировать ИИ
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <textarea
-                      value={decisionMsg}
-                      onChange={e => setDecisionMsg(e.target.value)}
-                      placeholder="Введите сообщение кандидату..."
-                      rows={6}
-                      className="w-full bg-white/10 border border-white/20 rounded-xl p-3.5 text-[14px] text-white placeholder:text-white/40 focus:outline-none focus:border-[#E7C768] leading-relaxed"
-                    />
-                    <div className="text-[14px] text-white/60">
-                      Сообщение будет отправлено кандидату в личный кабинет и сохранено в истории решений.
-                    </div>
-                  </div>
-
-                  {decisionErr && (
-                    <div className="text-[14px] text-[#fceabb] border border-[#d4af37]/40 rounded-xl p-3 bg-transparent backdrop-blur-md">
-                      {decisionErr}
-                    </div>
-                  )}
-
-                  <div className="flex gap-3 justify-end pt-2">
-                    <button
-                      type="button"
-                      disabled={decisionSaving}
-                      onClick={() => setDecisionOpen(null)}
-                      className="px-4 py-2.5 rounded-xl bg-transparent hover:border-[#d4af37] border border-white/20 text-white text-[14px] font-semibold"
-                    >
-                      Отмена
-                    </button>
-                    <button
-                      type="button"
-                      disabled={decisionSaving}
-                      onClick={submitDecision}
-                      className="px-5 py-2.5 rounded-xl text-[#17344F] font-bold text-[14px] inline-flex items-center gap-2 bg-gradient-to-r from-[#E7C768] to-[#D99E41] hover:brightness-110 shadow-lg disabled:opacity-50"
-                    >
-                      {decisionSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-                      {decisionOpen === "invited"
-                        ? "Пригласить и уведомить"
-                        : decisionOpen === "review"
-                          ? "Сохранить и уведомить"
-                          : "Отказать и уведомить"}
-                    </button>
-                  </div>
-                </div>
-              </div>,
-              document.body
-            )}
+            {/* Hire decision block with custom templates and macros */}
+            <DecisionSection
+              candidateId={candidateId}
+              candidate={c}
+              scores={s}
+              project={pr}
+              company={co}
+              responsibleContacts={data?.responsible_contacts}
+              containerStyle={{
+                backgroundColor: containerBgRgba && containerBgRgba !== "transparent" ? containerBgRgba : "transparent",
+                backdropFilter: `blur(${activeTheme?.glassBlurPx ?? 32}px)`,
+                WebkitBackdropFilter: `blur(${activeTheme?.glassBlurPx ?? 32}px)`,
+                borderColor: containerBorderRgba || "rgba(255, 255, 255, 0.25)",
+                borderWidth: "1px",
+                borderStyle: "solid",
+                boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5), 0 0 35px rgba(212,175,55,0.25)",
+              }}
+              onDecisionSaved={(fresh, decision, msg) => {
+                if (fresh) setData(fresh);
+                onDecisionChange?.(candidateId, decision, msg);
+              }}
+            />
 
             {/* Mobile Tab Dropdown to avoid horizontal scrolling */}
             <div className="sm:hidden relative">
@@ -1206,7 +564,13 @@ ${goal}
                 <ChevronDown className={`w-4 h-4 text-[#d4af37] transition-transform ${mobileTabMenuOpen ? "rotate-180" : ""}`} />
               </button>
               {mobileTabMenuOpen && (
-                <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-2xl bg-[#17344F]/95 backdrop-blur-2xl border border-white/20 p-2 space-y-1 shadow-2xl">
+                <div
+                  className="absolute left-0 right-0 top-full mt-2 z-30 rounded-2xl bg-transparent backdrop-blur-3xl border border-white/25 p-2 space-y-1 shadow-2xl"
+                  style={{
+                    backgroundColor: containerBgRgba && containerBgRgba !== "transparent" ? containerBgRgba : "transparent",
+                    borderColor: containerBorderRgba || "rgba(255, 255, 255, 0.25)",
+                  }}
+                >
                   {[
                     { value: "general", label: "Общая", icon: "👤" },
                     { value: "resume", label: "Резюме", icon: "📄" },
@@ -1343,155 +707,17 @@ ${goal}
               </TabsContent>
 
               <TabsContent value="checklist" className="space-y-6 mt-0">
-                {((s as any)?.checklist_feedback || (s as any)?.checklist_score != null) && (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4">
-                    <EmployerChecklistReport
-                      view={adaptEmployerChecklist((s as any)?.checklist_feedback)}
-                      score={(s as any)?.checklist_score ?? null}
-                    />
-                  </div>
-                )}
-
-                {checklistAnswersView.length > 0 ? (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4 space-y-3">
-                    <h3 className="text-[14px] font-bold text-[#E7C768] tracking-wide flex items-center gap-2">
-                      <CheckSquare className="w-4 h-4 text-[#E7C768]" /> Ответы на анкету (чек-лист)
-                    </h3>
-                    <div className="space-y-3 max-h-[40rem] overflow-y-auto pr-1">
-                      {checklistAnswersView.map((a: any, idx: number) => {
-                        const max = a.max ?? 5;
-                        const qText = a.question_text || (a.question_id ? a.question_id.slice(0, 8) + "…" : `Вопрос ${idx + 1}`);
-                        const short = qText.length > 80 ? qText.slice(0, 80).trimEnd() + "…" : qText;
-                        return (
-                          <details key={a.id} className="group rounded-2xl border border-white/15 hover:border-[#d4af37]/60 bg-transparent backdrop-blur-md overflow-hidden transition-all">
-                            <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-3 select-none">
-                              <span className="text-[14px] font-mono text-white/60 shrink-0 w-7">{idx + 1}.</span>
-                              <span className="text-[14px] font-semibold text-white leading-relaxed flex-1">{short}</span>
-                              <span className="text-[14px] font-mono font-bold shrink-0 px-2.5 py-1 rounded-lg border border-[#d4af37]/50 bg-transparent text-[#fceabb]">
-                                {a.score !== null && a.score !== undefined
-                                  ? `${Math.round(Number(a.score))}/${max}`
-                                  : (a.is_correct ? "✓" : "—")}
-                              </span>
-                              <span className="text-white/60 text-[14px] shrink-0 transition-transform group-open:rotate-180" aria-hidden>▾</span>
-                            </summary>
-                            <div className="px-4 pb-4 pt-2 space-y-3 border-t border-white/10">
-                              {qText && short !== qText && (
-                                <div className="text-[14px] text-white/90 leading-relaxed">
-                                  <span className="text-[14px] font-mono text-white/60 mr-2">Вопрос:</span>{qText}
-                                </div>
-                              )}
-                              <div className="text-[14px] text-white leading-relaxed bg-transparent backdrop-blur-md border border-white/15 rounded-xl p-3.5">
-                                <div className="text-[14px] font-mono text-white/60 mb-1">Ответ кандидата:</div>
-                                {a.answer_text ? <RichMarkdown tone="chat">{a.answer_text}</RichMarkdown> : <span className="italic text-white/50">(пусто)</span>}
-                              </div>
-                              {a.feedback && (
-                                <div className="text-[14px] text-[#fceabb] leading-relaxed bg-transparent backdrop-blur-md border border-[#d4af37]/30 rounded-xl p-3.5">
-                                  <span className="font-mono text-white/70 mr-2">Комментарий ИИ:</span>{a.feedback}
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : !((s as any)?.checklist_feedback || (s as any)?.checklist_score != null) ? (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-6 text-center text-[14px] text-white/70">
-                    Кандидат ещё не отвечал на анкету.
-                  </div>
-                ) : null}
+                <ChecklistTabContent scores={s} checklistAnswersView={checklistAnswersView} />
               </TabsContent>
 
               <TabsContent value="situations" className="space-y-6 mt-0">
-                {((s as any)?.situations_feedback || (s as any)?.situations_score != null) && (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4">
-                    <EmployerSituationsReport
-                      view={adaptEmployerSituations((s as any)?.situations_feedback)}
-                      score={(s as any)?.situations_score ?? null}
-                      situationDefs={situationCases.map((x: any, i: number) => ({
-                        id: String(x.id || `s${i + 1}`),
-                        title: x.title,
-                        brief: x.brief,
-                      }))}
-                      situationAnswers={Object.fromEntries(
-                        (situationAnswers || []).map((a: any) => [String(a.question_id || a.id), a.answer_text || ""]),
-                      )}
-                    />
-                  </div>
-                )}
-
-                {situationAnswersView.length > 0 ? (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4 space-y-3">
-                    <h3 className="text-[14px] font-bold text-[#E7C768] tracking-wide flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4 text-[#E7C768]" /> Ответы по ситуациям
-                    </h3>
-                    <div className="space-y-3 max-h-[40rem] overflow-y-auto pr-1">
-                      {situationAnswersView.map((a: any, idx: number) => {
-                        const qText = a.question_text || `Ситуация ${idx + 1}`;
-                        const short = qText.length > 80 ? qText.slice(0, 80).trimEnd() + "…" : qText;
-                        return (
-                          <details key={a.id} className="group rounded-2xl border border-white/15 hover:border-[#d4af37]/60 bg-transparent backdrop-blur-md overflow-hidden transition-all">
-                            <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-3 select-none">
-                              <span className="text-[14px] font-mono text-white/60 shrink-0 w-7">{idx + 1}.</span>
-                              <span className="text-[14px] font-semibold text-white leading-relaxed flex-1">{short}</span>
-                              <span className="text-[14px] font-mono font-bold shrink-0 px-2.5 py-1 rounded-lg border border-[#d4af37]/50 bg-transparent text-[#fceabb]">
-                                {a.score !== null && a.score !== undefined
-                                  ? `${Math.round(Number(a.score))}/100`
-                                  : (a.is_correct ? "✓" : "—")}
-                              </span>
-                              <span className="text-white/60 text-[14px] shrink-0 transition-transform group-open:rotate-180" aria-hidden>▾</span>
-                            </summary>
-                            <div className="px-4 pb-4 pt-2 space-y-3 border-t border-white/10">
-                              {a.case_text && a.case_text !== a.question_text && (
-                                <div className="rounded-xl bg-transparent backdrop-blur-md border border-white/15 p-3.5 text-[14px] text-white/95 leading-relaxed">
-                                  <div className="text-[14px] font-mono text-[#E7C768] mb-1">Ситуация / кейс:</div>
-                                  <RichMarkdown tone="chat">{a.case_text}</RichMarkdown>
-                                </div>
-                              )}
-                              {a.criteria && (
-                                <div className="text-[14px] text-white/90 leading-relaxed bg-transparent backdrop-blur-md border border-white/10 rounded-xl p-3.5">
-                                  <span className="text-[#E7C768] font-bold">Критерии оценки:</span> {a.criteria}
-                                </div>
-                              )}
-                              <div className="text-[14px] text-white leading-relaxed bg-transparent backdrop-blur-md border border-white/15 rounded-xl p-3.5">
-                                <div className="text-[14px] font-mono text-white/60 mb-1">Ответ кандидата:</div>
-                                {a.answer_text ? <RichMarkdown tone="chat">{a.answer_text}</RichMarkdown> : <span className="italic text-white/50">(пусто)</span>}
-                              </div>
-                              {a.feedback && (
-                                <div className="text-[14px] text-[#fceabb] leading-relaxed bg-transparent backdrop-blur-md border border-[#d4af37]/30 rounded-xl p-3.5">
-                                  <span className="font-mono text-white/70 mr-2">Комментарий ИИ:</span>{a.feedback}
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : !((s as any)?.situations_feedback || (s as any)?.situations_score != null) ? (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-6 text-center text-[14px] text-white/70">
-                    Кандидат ещё не проходил ситуации.
-                  </div>
-                ) : null}
-                {interviews.length > 0 && (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4 space-y-3">
-                    <h3 className="text-[14px] font-bold text-[#E7C768] tracking-wide flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4 text-[#E7C768]" /> Стенограммы интервью
-                    </h3>
-                    <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                      {interviews.map((i) => (
-                        <div key={i.id} className="p-3.5 rounded-xl border border-white/10 bg-transparent backdrop-blur-md space-y-2">
-                          <div className="text-white/60 font-mono text-[14px]">#{i.public_id} · {i.status} · {i.started_at ? new Date(i.started_at).toLocaleString("ru-RU") : "—"}</div>
-                          {i.transcript_text && (
-                            <div className="text-[14px] text-white/90 leading-relaxed max-h-40 overflow-y-auto">
-                              <RichMarkdown tone="chat">{i.transcript_text}</RichMarkdown>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <SituationsTabContent
+                  scores={s}
+                  situationCases={situationCases}
+                  situationAnswers={situationAnswers}
+                  situationAnswersView={situationAnswersView}
+                  interviews={interviews}
+                />
               </TabsContent>
 
               <TabsContent value="overall" className="space-y-6 mt-0">
@@ -1507,189 +733,23 @@ ${goal}
               </TabsContent>
 
               <TabsContent value="training" className="space-y-4 mt-0">
-                {c.crm_stage === "certified" && (
-                  <div className="bg-transparent backdrop-blur-xl border border-[#d4af37] rounded-2xl p-4 flex items-center gap-3 shadow-[0_0_20px_rgba(212,175,55,0.2)]">
-                    <Award className="w-6 h-6 text-[#d4af37] shrink-0" />
-                    <div>
-                      <div className="text-[14px] font-bold text-[#fceabb]">Кандидат сертифицирован</div>
-                      <div className="text-[14px] text-white/70">Успешно пройдены все этапы воронки и обучения.</div>
-                    </div>
-                  </div>
-                )}
-
-                {(() => {
-                  const STAGE_DEFS: { key: string; aliases: string[]; title: string; icon: string }[] = [
-                    { key: "professional", aliases: ["professional", "prof", "профессия"], title: "Профессия", icon: "💼" },
-                    { key: "product", aliases: ["product", "продукт"], title: "Продукт", icon: "🎁" },
-                    { key: "system", aliases: ["system", "systems", "система", "системное"], title: "Система", icon: "⚙️" },
-                  ];
-                  const findFor = (key: string) => {
-                    const def = STAGE_DEFS.find(d => d.key === key)!;
-                    return stageProgress.find((sp: any) =>
-                      def.aliases.some(a => String(sp.stage || "").toLowerCase().includes(a)),
-                    );
-                  };
-                  const renderStage = (def: { key: string; aliases: string[]; title: string; icon: string }) => {
-                    const sp: any = findFor(def.key);
-                    const stageAttempts = trainingAttempts.filter((ta: any) =>
-                      def.aliases.some((a: string) => String(ta.stage || "").toLowerCase().includes(a))
-                    );
-
-                    if (!sp && stageAttempts.length === 0) {
-                      return (
-                        <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-6 text-center text-[14px] text-white/70">
-                          <span className="text-lg mr-1">{def.icon}</span> Кандидат ещё не приступал к этапу «{def.title}».
-                        </div>
-                      );
-                    }
-                    const passed = !!(sp?.passed_at || stageAttempts.some((a: any) => !!a.passed));
-                    const status: "passed" | "in_progress" | "not_started" = passed ? "passed" : "in_progress";
-                    const score = sp?.last_score ?? sp?.best_score ?? (stageAttempts[0]?.score ?? null);
-                    const max = Number(stageAttempts[0]?.total_score) > 0 ? Number(stageAttempts[0].total_score) : 100;
-                    const dbStagePass = stagePassScoreMap[def.key] || (def.key === "system" ? stagePassScoreMap["systems"] : 0);
-                    const attPass = Number(stageAttempts[0]?.pass_score);
-                    const passScore = dbStagePass > 0 ? dbStagePass : (Number.isFinite(attPass) && attPass > 0 ? attPass : 70);
-
-                    const effectiveEmployerSummary = (sp?.employer_summary && typeof sp.employer_summary === "object")
-                      ? sp.employer_summary
-                      : (stageAttempts[0]?.feedback && typeof stageAttempts[0].feedback === "object"
-                          ? stageAttempts[0].feedback
-                          : {
-                              summary: `Кандидат успешно сдал проверочные тесты по этапу «${def.title}» с баллом ${score || 90}/100.`,
-                              strengths: ["Глубокое знание регламентов", "Высокая точность ответов на аттестации"],
-                              recommendation: "Допущен к следующим этапам.",
-                            });
-
-                    return (
-                      <div className="space-y-4">
-                        <EmployerTrainingStageReport
-                          status={status}
-                          score={score}
-                          max={max}
-                          passScore={passScore}
-                          stage={String(sp?.stage || def.key)}
-                          employerSummary={effectiveEmployerSummary}
-                          feedback={sp?.last_feedback || stageAttempts[0]?.feedback}
-                          answers={sp?.last_answers || stageAttempts[0]?.answers}
-                          questionsMap={stageQuestionMap}
-                        />
-
-                        {/* List of test attempts from database */}
-                        {stageAttempts.length > 0 && (
-                          <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4 space-y-3">
-                            <h4 className="text-[14px] font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent flex items-center gap-2">
-                              <span>Попытки прохождения тестирования ({stageAttempts.length})</span>
-                            </h4>
-                            <div className="space-y-2">
-                              {stageAttempts.map((att: any, idx: number) => {
-                                const attScore = att.score != null ? Math.round(Number(att.score)) : null;
-                                const attPassThreshold = Number(att.pass_score) > 0 ? Number(att.pass_score) : passScore;
-                                const isPassed = att.passed === 1 || att.passed === true || (attScore != null && attScore >= attPassThreshold);
-                                const dateStr = att.created_at ? new Date(att.created_at).toLocaleString("ru-RU") : "—";
-                                return (
-                                  <div key={att.id || idx} className="p-3 rounded-xl border border-white/10 bg-transparent flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                                    <div className="space-y-0.5">
-                                      <div className="flex items-center gap-2">
-                                        <span className="font-bold text-[14px] text-white">Попытка #{att.attempt_no || (idx + 1)}</span>
-                                        <span className={`text-[12px] font-semibold px-2 py-0.5 rounded-lg border ${
-                                          isPassed ? "border-[#d4af37]/60 text-[#fceabb]" : "border-white/20 text-white/70"
-                                        }`}>
-                                          {isPassed ? "Сдано" : "Не сдано"}
-                                        </span>
-                                      </div>
-                                      <div className="text-[12px] text-white/60">Дата попытки: {dateStr}</div>
-                                    </div>
-                                    <div className="flex items-center gap-3">
-                                      <div className="text-right">
-                                        <span className="text-[14px] text-white/70">Оценка ИИ: </span>
-                                        <span className="font-mono font-bold text-[#fceabb] text-[15px]">{attScore != null ? `${attScore}/100` : "—"}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  };
-                  return (
-                    <Tabs defaultValue="professional" className="space-y-3">
-                      <TabsList className="bg-transparent backdrop-blur-xl border border-white/20 p-1.5 rounded-2xl flex flex-wrap h-auto gap-1.5 w-full">
-                        {STAGE_DEFS.map(d => (
-                          <TabsTrigger
-                            key={d.key}
-                            value={d.key}
-                            className="flex-1 min-w-[110px] text-center data-[state=active]:border-[#d4af37] data-[state=active]:text-[#fceabb] data-[state=active]:shadow-[0_0_15px_rgba(212,175,55,0.25)] border border-transparent text-white/80 font-bold text-[14px] px-3.5 py-2.5 rounded-xl transition-all"
-                          >
-                            {d.icon} {d.title}
-                          </TabsTrigger>
-                        ))}
-                        <TabsTrigger
-                          value="__summary"
-                          data-testid="training-summary-tab"
-                          className="flex-1 min-w-[110px] text-center data-[state=active]:border-[#d4af37] data-[state=active]:text-[#fceabb] data-[state=active]:shadow-[0_0_15px_rgba(212,175,55,0.25)] border border-transparent text-white/80 font-bold text-[14px] px-3.5 py-2.5 rounded-xl transition-all"
-                        >
-                          🏆 Итого
-                        </TabsTrigger>
-                      </TabsList>
-                      {STAGE_DEFS.map(d => (
-                        <TabsContent key={d.key} value={d.key} className="mt-0">
-                          {renderStage(d)}
-                        </TabsContent>
-                      ))}
-                      <TabsContent value="__summary" className="mt-0 space-y-3">
-                        <div className="flex items-center justify-between gap-3 flex-wrap">
-                          <div className="text-[14px] text-white/70">
-                            {trainingSummary?.training_summary_generated_at
-                              ? <>Сформирован: {new Date(trainingSummary.training_summary_generated_at).toLocaleString("ru-RU")}</>
-                              : <>Итог обучения ещё не сформирован.</>}
-                          </div>
-                          <button
-                            type="button"
-                            data-testid="recalc-training-summary-btn"
-                            disabled={trainingSummaryLoading}
-                            onClick={recomputeTrainingSummary}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-[#E7C768] to-[#D99E41] text-[#17344F] font-bold text-[14px] shadow hover:brightness-110 disabled:opacity-50"
-                          >
-                            {trainingSummaryLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                            Сформировать итог
-                          </button>
-                        </div>
-                        {trainingSummaryErr && (
-                          <div className="text-[14px] text-[#fceabb] bg-transparent border border-[#d4af37]/40 rounded-xl p-3">
-                            {trainingSummaryErr}
-                          </div>
-                        )}
-                        <EmployerTrainingSummaryReport
-                          report={trainingSummary?.training_employer_feedback || null}
-                        />
-                      </TabsContent>
-                    </Tabs>
-                  );
-                })()}
-
-                {trainingProgress.length > 0 && (
-                  <div className="bg-transparent backdrop-blur-xl border border-white/15 rounded-2xl p-4 space-y-3">
-                    <h3 className="text-[14px] font-bold text-[#E7C768] tracking-wide flex items-center gap-2">
-                      <GraduationCap className="w-4 h-4 text-[#E7C768]" /> Тесты обучения
-                    </h3>
-                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                      {trainingProgress.map((tp) => (
-                        <div key={tp.id} className="bg-transparent border border-white/10 rounded-xl p-3 backdrop-blur-md">
-                          <div className="flex items-center justify-between text-[14px]">
-                            <span className="font-mono text-white/70">Урок {tp.lesson_id?.slice(0, 8)}…</span>
-                            <span className="px-2.5 py-0.5 rounded-lg font-mono text-[14px] border border-[#d4af37]/40 text-[#fceabb]">
-                              {tp.score !== null && tp.score !== undefined ? `${Math.round(Number(tp.score))}/100` : (tp.is_completed ? "завершён" : "в процессе")}
-                            </span>
-                          </div>
-                          {tp.quiz_feedback && <div className="text-[14px] text-white/80 mt-1">{tp.quiz_feedback}</div>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <CandidateTrainingTab
+                  candidateId={candidateId}
+                  candidate={c}
+                  scores={s}
+                  stageProgress={stageProgress}
+                  trainingAttempts={trainingAttempts}
+                  trainingProgress={trainingProgress}
+                  stageQuestionMap={stageQuestionMap}
+                  stagePassScoreMap={stagePassScoreMap}
+                  trainingSummary={trainingSummary}
+                  activeTheme={activeTheme}
+                  onReloadSummary={loadTrainingSummary}
+                  onRefreshCandidate={async () => {
+                    const { data: fresh } = await dbClient.rpc("candidate_full_details" as any, { _candidate: candidateId });
+                    if (fresh) setData(fresh);
+                  }}
+                />
               </TabsContent>
             </Tabs>
           </div>

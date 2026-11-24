@@ -227,14 +227,18 @@ export function adaptCandidateSituations(raw: unknown): CandidateSituationsView 
 
   const items = asArr(obj.items).map((it, idx): CandidateSituationItem | null => {
     const o = asObj(it); if (!o) return null;
-    return {
-      situationId: String(o.situation_id ?? o.id ?? `s${idx + 1}`),
-      title: asStr(o.title) || `Ситуация #${idx + 1}`,
-      score: asNum(o.score),
-      max: asNum(o.max) || 100,
-      feedback: asStr(o.feedback) || asStr(o.explanation),
-      recommendation: asStr(o.recommendation) || asStr(o.advice),
-    };
+      const rawRec = asStr(o.recommendation) || asStr(o.advice);
+      const cleanRec = rawRec && !/(рекомендуется\s+продолжить\s+рассмотрение|рассмотрение\s+кандидат|на\s+интервью\s+уточнить|^(попросите|уточните\s+у|проверьте\s+у)\s+(кандидат|соискател)|\bкандидат[ауеом]?\b.*\b(он|его|ему|им)\b)/i.test(rawRec)
+        ? rawRec
+        : undefined;
+      return {
+        situationId: String(o.situation_id ?? o.id ?? `s${idx + 1}`),
+        title: asStr(o.title) || `Ситуация #${idx + 1}`,
+        score: asNum(o.score),
+        max: asNum(o.max) || 100,
+        feedback: asStr(o.feedback) || asStr(o.explanation),
+        recommendation: cleanRec,
+      };
   }).filter((x): x is CandidateSituationItem => !!x && !!x.situationId);
 
   const strengths = asStrArray(obj.strengths);

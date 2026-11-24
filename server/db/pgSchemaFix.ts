@@ -139,7 +139,9 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
         ADD COLUMN IF NOT EXISTS interview_limit BIGINT,
         ADD COLUMN IF NOT EXISTS max_trainings BIGINT,
         ADD COLUMN IF NOT EXISTS training_limit BIGINT,
-        ADD COLUMN IF NOT EXISTS role_slug TEXT;`,
+        ADD COLUMN IF NOT EXISTS role_slug TEXT,
+        ADD COLUMN IF NOT EXISTS responsible_employer_id TEXT,
+        ADD COLUMN IF NOT EXISTS responsible_employer_ids TEXT;`,
     },
     {
       name: "employers_alias_cols",
@@ -151,6 +153,20 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
         ADD COLUMN IF NOT EXISTS telegram_username TEXT,
         ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT,
         ADD COLUMN IF NOT EXISTS notifications_config TEXT;`,
+    },
+    {
+      name: "employers_telegram_chat_id_text",
+      sql: `DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'employers'
+            AND column_name = 'telegram_chat_id'
+            AND data_type <> 'text'
+        ) THEN
+          ALTER TABLE employers ALTER COLUMN telegram_chat_id TYPE TEXT USING telegram_chat_id::TEXT;
+        END IF;
+      END $$;`,
     },
     {
       name: "file_storage_alias_cols",
@@ -183,6 +199,65 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );`,
     },
+    {
+      name: "candidates_notifications_col",
+      sql: `ALTER TABLE IF EXISTS candidates
+        ADD COLUMN IF NOT EXISTS notifications_config TEXT;`,
+    },
+    {
+      name: "push_subscriptions",
+      sql: `CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id TEXT PRIMARY KEY,
+        owner_type TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        owner_public_id TEXT,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        user_agent TEXT,
+        device_label TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`,
+    },
+    {
+      name: "telegram_notification_dedup",
+      sql: `CREATE TABLE IF NOT EXISTS telegram_notification_dedup (
+        dedup_key TEXT PRIMARY KEY,
+        project_id TEXT,
+        event_key TEXT,
+        chat_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );`,
+    },
+    {
+      name: "employer_decision_templates",
+      sql: `CREATE TABLE IF NOT EXISTS employer_decision_templates (
+        id TEXT PRIMARY KEY,
+        employer_id TEXT NOT NULL,
+        decision_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_default BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`,
+    },
+    {
+      name: "employer_decision_template_state",
+      sql: `CREATE TABLE IF NOT EXISTS employer_decision_template_state (
+        employer_id TEXT NOT NULL,
+        decision_type TEXT NOT NULL,
+        last_template_id TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (employer_id, decision_type)
+      );`,
+    },
+    {
+      name: "idx_employer_decision_templates_emp_type",
+      sql: `CREATE INDEX IF NOT EXISTS idx_emp_dec_tpl_emp_type ON employer_decision_templates (employer_id, decision_type);`,
+    },
   ];
 
   for (const item of ddlStatements) {
@@ -192,6 +267,20 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     } catch (err: any) {
       console.warn(`[PG Schema Fix] DDL notice (${item.name}):`, err?.message);
     }
+  }
+
+  try {
+    await executeProTalkQuery(
+      `UPDATE projects SET responsible_employer_id = employer_id WHERE (responsible_employer_id IS NULL OR TRIM(responsible_employer_id) = '') AND employer_id IS NOT NULL AND TRIM(employer_id) != '';`
+    );
+    await executeProTalkQuery(
+      `UPDATE projects SET responsible_employer_ids = json_build_array(COALESCE(NULLIF(TRIM(responsible_employer_id), ''), TRIM(employer_id)))::TEXT
+       WHERE (responsible_employer_ids IS NULL OR TRIM(responsible_employer_ids) = '' OR TRIM(responsible_employer_ids) = '[]')
+         AND COALESCE(NULLIF(TRIM(responsible_employer_id), ''), TRIM(employer_id)) IS NOT NULL
+         AND COALESCE(NULLIF(TRIM(responsible_employer_id), ''), TRIM(employer_id)) != '';`
+    );
+  } catch (err: any) {
+    console.warn("[PG Schema Fix] Backfill responsible_employer_id notice:", err?.message);
   }
 
   // 2. Deduplicate rows & create UNIQUE indexes so ON CONFLICT works natively in PG
@@ -330,7 +419,7 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     }
   }
 
-  // 5. Fix corrupted UTF-8 company names / role names if any exist in PG
+  // 5. Fix corrupted UTF-8 company names / role names and keep candidate role_name synced with live project role_name
   try {
     await executeProTalkQuery(
       `UPDATE companies SET name = 'ООО РобоРекрут Инжиниринг' WHERE public_id = '300004' AND name = 'ООО РобоРекру Инжиниринг';`
@@ -338,7 +427,97 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     await executeProTalkQuery(
       `UPDATE projects SET company_name = 'РентРОП' WHERE company_public_id = '300047' AND (company_name LIKE '%\uFFFD%' OR company_name != 'РентРОП');`
     );
+    await executeProTalkQuery(
+      `UPDATE projects SET role_name = TRIM(role_name) WHERE role_name IS NOT NULL AND role_name != TRIM(role_name);`
+    );
+    await executeProTalkQuery(
+      `UPDATE candidates c
+       SET role_name = TRIM(p.role_name),
+           updated_at = NOW()
+       FROM projects p
+       WHERE (c.project_id = p.id OR c.project_id = CAST(p.public_id AS TEXT))
+         AND p.role_name IS NOT NULL
+         AND TRIM(p.role_name) != ''
+         AND COALESCE(c.role_name, '') != TRIM(p.role_name);`
+    );
   } catch {}
+
+  // 6. Seed/upgrade structured training_summary_evaluation prompts in protalk_prompts
+  try {
+    const baseSysPrompt = `Ты — куратор корпоративного обучения и оценки персонала платформы «Робот Рекрутер».
+На основании переданных кратких саммари и баллов по всем пройденным этапам собеседования (Резюме, Чек-лист, Ситуации, Общая оценка) и всем этапам обучения (Профессия, Продукт, Система) сформируй итоговое экспертное заключение.
+Опирайся строго на предоставленные факты и саммари этапов без домыслов и без капслока.
+Верни строго валидный JSON без пояснительного текста вокруг:
+{
+  "score": 0..100,
+  "data_completeness": 0..100,
+  "verdict": "Краткий вердикт (например: Готов к работе)",
+  "summary": "Развернутый связный итоговый вывод по интервью и обучению (4-6 предложений)",
+  "completed_stages": ["Список пройденных этапов"],
+  "missing_stages": [],
+  "mastered_topics": ["Ключевые усвоенные компетенции и темы"],
+  "weak_topics": ["Зоны внимания или темы для усиления"],
+  "risks": [{"title": "Название риска", "evidence": "Основание из саммари этапов", "severity": "low|medium|high"}],
+  "red_flags": [{"title": "Критичный момент при наличии", "evidence": "Основание"}],
+  "revision_plan": ["Конкретный шаг адаптации или закрепления 1"],
+  "readiness": "Оценка практической готовности к работе на должности",
+  "recommendation": "Четкая рекомендация для руководителя по выводу и адаптации"
+}`;
+    const baseUserTpl = `Кандидат: {{candidate_name}}
+Должность: {{role_name}}
+Компания: {{company_name}}
+
+Саммари этапов интервью:
+{{interview_summaries}}
+
+Саммари этапов обучения:
+{{training_summaries}}
+
+Сформируй итоговый отчет строго в указанном JSON-формате без капслока.`;
+
+    const promaxSysPrompt = `Ты — главный эксперт-куратор ProMax по оценке и корпоративному обучению персонала.
+На основании саммари всех этапов интервью (Резюме, Чек-лист, Ситуации, Общая оценка) и всех этапов обучения (Профессия, Продукт, Система) сформируй глубокое итоговое заключение для руководителя.
+Используй только факты из саммари этапов, без капслока и воды.
+Верни строго валидный JSON:
+{
+  "score": 0..100,
+  "data_completeness": 0..100,
+  "verdict": "Экспертный вердикт",
+  "summary": "Глубокий аналитический итог по кандидату за все этапы интервью и обучения (5-7 предложений)",
+  "completed_stages": ["Список пройденных этапов"],
+  "missing_stages": [],
+  "mastered_topics": ["Подтвержденные сильные компетенции"],
+  "weak_topics": ["Темы, требующие наставничества на старте"],
+  "risks": [{"title": "Риск", "evidence": "Факт из саммари", "severity": "low|medium|high"}],
+  "red_flags": [{"title": "Особое внимание при наличии", "evidence": "Факт"}],
+  "revision_plan": ["Шаг плана ввода в должность 1"],
+  "readiness": "Готовность к самостоятельному выполнению KPI",
+  "recommendation": "Итоговая управленческая рекомендация по найму и адаптации"
+}`;
+
+    await executeProTalkQuery(
+      `INSERT INTO protalk_prompts (id, prompt_key, prompt_name, bot_id, system_prompt, user_prompt_template, is_active, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, NOW())
+       ON CONFLICT (prompt_key) DO UPDATE SET
+         system_prompt = EXCLUDED.system_prompt,
+         user_prompt_template = EXCLUDED.user_prompt_template,
+         updated_at = NOW()
+       WHERE COALESCE(protalk_prompts.system_prompt, '') NOT LIKE '%completed_stages%';`,
+      ["p-train-sum-1", "training_summary_evaluation", "Итоговое резюме по прохождению обучения кандидатом", "pt-13", baseSysPrompt, baseUserTpl]
+    );
+    await executeProTalkQuery(
+      `INSERT INTO protalk_prompts (id, prompt_key, prompt_name, bot_id, system_prompt, user_prompt_template, is_active, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, NOW())
+       ON CONFLICT (prompt_key) DO UPDATE SET
+         system_prompt = EXCLUDED.system_prompt,
+         user_prompt_template = EXCLUDED.user_prompt_template,
+         updated_at = NOW()
+       WHERE COALESCE(protalk_prompts.system_prompt, '') NOT LIKE '%completed_stages%';`,
+      ["p-train-sum-2", "training_summary_evaluation_promax", "ProMax Итоговое резюме по прохождению обучения кандидатом", "pt-promax-13", promaxSysPrompt, baseUserTpl]
+    );
+  } catch (pErr: any) {
+    console.warn("[PG Schema Fix] training_summary_evaluation prompt seed notice:", pErr?.message);
+  }
 
   const checkTables = await queryAllPg<{ table_name: string }>(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;`

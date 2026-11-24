@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import tailwindcss from "@tailwindcss/vite";
+import { VitePWA } from "vite-plugin-pwa";
 
 const APP_VERSION = String(Date.now());
 
@@ -31,7 +32,115 @@ export default defineConfig(() => ({
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
-  plugins: [react(), tailwindcss(), versionJsonPlugin()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    versionJsonPlugin(),
+    VitePWA({
+      registerType: "autoUpdate",
+      injectRegister: false,
+      manifestFilename: "manifest.webmanifest",
+      includeAssets: [
+        "favicon.ico",
+        "push-sw.js",
+        "icons/favicon/icon.svg",
+        "icons/favicon/favicon-16x16.png",
+        "icons/favicon/favicon-32x32.png",
+        "icons/favicon/favicon-48x48.png",
+        "icons/favicon/favicon-96x96.png",
+        "icons/seo/favicon-120x120.png",
+        "icons/seo/favicon-192x192.png",
+        "icons/apple/apple-touch-icon.png",
+        "icons/apple/apple-touch-icon-152x152.png",
+        "icons/apple/apple-touch-icon-167x167.png",
+        "icons/apple/apple-touch-icon-120x120.png",
+        "icons/pwa/pwa-192x192.png",
+        "icons/pwa/pwa-512x512.png",
+        "icons/pwa/pwa-maskable-192x192.png",
+        "icons/pwa/pwa-maskable-512x512.png",
+        "icons/pwa/badge-72x72.png",
+      ],
+      manifest: {
+        name: "Робот Рекрутер — ИИ-платформа найма",
+        short_name: "Робот Рекрутер",
+        description:
+          "ИИ-платформа для автоматического подбора персонала, онлайн-собеседований и корпоративного обучения.",
+        lang: "ru",
+        dir: "ltr",
+        theme_color: "#17344F",
+        background_color: "#17344F",
+        display: "standalone",
+        display_override: ["standalone", "minimal-ui"],
+        orientation: "portrait-primary",
+        scope: "/",
+        start_url: "/",
+        id: "/",
+        categories: ["business", "productivity"],
+        icons: [
+          {
+            src: "/icons/pwa/pwa-192x192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "/icons/pwa/pwa-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "/icons/pwa/pwa-maskable-192x192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "maskable",
+          },
+          {
+            src: "/icons/pwa/pwa-maskable-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+        ],
+        shortcuts: [
+          {
+            name: "Каталог вакансий",
+            short_name: "Вакансии",
+            url: "/vacancy",
+            icons: [{ src: "/icons/pwa/pwa-192x192.png", sizes: "192x192" }],
+          },
+          {
+            name: "Демо ИИ-интервью",
+            short_name: "Демо",
+            url: "/demo",
+            icons: [{ src: "/icons/pwa/pwa-192x192.png", sizes: "192x192" }],
+          },
+        ],
+      },
+      workbox: {
+        importScripts: ["/push-sw.js"],
+        globPatterns: ["**/*.{js,css,ico,png,svg,jpg,webp,woff2,webmanifest}"],
+        navigateFallback: null,
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith("/icons/"),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "rr-icons-cache",
+              expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
+          },
+        ],
+      },
+      devOptions: {
+        enabled: false,
+      },
+    }),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
@@ -86,11 +195,10 @@ export default defineConfig(() => ({
         ? parseInt(process.env.PORT, 10)
         : 3000,
     allowedHosts: true as const,
-    hmr: process.env.DISABLE_HMR !== "true",
+    hmr: process.env.ENABLE_HMR === "true" && process.env.DISABLE_HMR !== "true",
     watch:
-      process.env.DISABLE_HMR === "true"
-        ? null
-        : {
+      process.env.ENABLE_HMR === "true" && process.env.DISABLE_HMR !== "true"
+        ? {
             ignored: [
               "**/server/**",
               "**/data/**",
@@ -98,6 +206,7 @@ export default defineConfig(() => ({
               "**/*.db*",
               "**/*_seed.json",
             ],
-          },
+          }
+        : null,
   },
 }));

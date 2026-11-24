@@ -7,6 +7,7 @@ import { useState } from "react";
 import { X, Mail, Lock, Loader, CheckCircle, Phone, User, Eye, EyeOff } from "lucide-react";
 import { saveCandidateSession } from "@/lib/candidateSession";
 import { hexToRgba, LandingThemeConfig } from "./LandingStyleEditor";
+import LegalConsentBlock from "./legal/LegalConsentBlock";
 
 type Props = {
   isOpen: boolean;
@@ -40,6 +41,7 @@ export default function CandidateAuthModal({
   const [canSwitchToSignup, setCanSwitchToSignup] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
+  const [legalConsentOk, setLegalConsentOk] = useState(true);
 
   if (!isOpen) return null;
 
@@ -119,6 +121,10 @@ export default function CandidateAuthModal({
     if (pw.length < 8) { setErr("Пароль должен быть не короче 8 символов"); return; }
     if (tab === "signup" && pw !== pw2) { setErr("Пароли не совпадают"); return; }
     if (tab === "signup" && !PHONE_RE.test(phone.trim())) { setErr("Введите корректный номер телефона"); return; }
+    if (tab === "signup" && !legalConsentOk) {
+      setErr("Для регистрации необходимо согласиться с политикой конфиденциальности, пользовательским соглашением и обработкой персональных данных.");
+      return;
+    }
 
     setBusy(true);
     try {
@@ -577,6 +583,18 @@ export default function CandidateAuthModal({
                   </label>
                 )}
               </div>
+
+              {tab === "signup" && (
+                <LegalConsentBlock
+                  mode="candidate"
+                  context="register"
+                  checked={legalConsentOk}
+                  onChange={setLegalConsentOk}
+                  companyName={companyName}
+                  roleName={roleName}
+                  themeConfig={themeConfig}
+                />
+              )}
 
               {err && (
                 <div

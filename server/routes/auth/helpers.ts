@@ -585,8 +585,29 @@ export async function getUserNotifications(db: PgDBWrapper, req: Request, body: 
       uniqueItems.push(it);
     }
   }
-  uniqueItems.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const finalItems = uniqueItems.slice(0, limit);
+
+  let filteredItems = uniqueItems;
+  if (emp || cand) {
+    try {
+      const { parseNotificationsConfig, isChannelEnabledForEvent, mapNotificationKindToEventKey } = await import(
+        "../../services/push/pushService"
+      );
+      const role = emp ? "employer" : "candidate";
+      const cfg = parseNotificationsConfig(emp ? emp.notifications_config : cand.notifications_config, role);
+      if (cfg.channels.bell === false) {
+        filteredItems = [];
+      } else {
+        filteredItems = uniqueItems.filter((it) => {
+          const evKey = mapNotificationKindToEventKey(it.kind, role);
+          if (!evKey) return true;
+          return isChannelEnabledForEvent(cfg, evKey, "bell");
+        });
+      }
+    } catch {}
+  }
+
+  filteredItems.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const finalItems = filteredItems.slice(0, limit);
   const unreadCount = finalItems.filter((x) => !x.read_at).length;
 
   return {

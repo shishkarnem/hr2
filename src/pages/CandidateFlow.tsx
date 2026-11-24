@@ -22,6 +22,8 @@ import { CandidateFieldsEditorBlock } from "@/components/CandidateFieldsEditorBl
 import AcademyModal from "@/components/AcademyModal";
 import { useAIWait } from "@/components/AIWaitProvider";
 import NotificationsBell from "@/components/NotificationsBell";
+import PWAInstallCard from "@/components/pwa/PWAInstallCard";
+import NotificationSettingsPanel from "@/components/notifications/NotificationSettingsPanel";
 import HireDecisionBanner from "@/components/HireDecisionBanner";
 import Reveal from "@/components/Reveal";
 import { useLandingTheme } from "@/components/LandingStyleEditor";
@@ -31,6 +33,7 @@ import { JobProject, Candidate, Message, TrainingBlock } from "../types";
 import { FN } from "@/config";
 import { getCandidateSession, saveCandidateSession, clearCandidateSession } from "@/lib/candidateSession";
 import { resizeToWebP, cropToSquareWebP } from "@/lib/imageResize";
+import { exportCertificateToPdf } from "@/lib/certificatePdf";
 import { getUploadService } from "@/services/FileUploadService";
 import {
   FileText,
@@ -770,7 +773,8 @@ export default function CandidateFlow() {
     if (compSlug) return `/${compSlug}`;
     return "/main";
   };
-  const [employerContacts, setEmployerContacts] = useState<{ name?: string|null; email?: string|null; phone?: string|null; telegram?: string|null }>({});
+  const [employerContacts, setEmployerContacts] = useState<{ name?: string|null; email?: string|null; phone?: string|null; telegram?: string|null; roleLabel?: string|null }>({});
+  const [employerContactsList, setEmployerContactsList] = useState<Array<{ id?: string; public_id?: string; name?: string|null; roleLabel?: string|null; email?: string|null; phone?: string|null; telegram?: string|null; avatar_url?: string|null }>>([]);
   // Loading state for the initial session/project resolution.
   const [sessionLoading, setSessionLoading] = useState(true);
 
@@ -810,15 +814,29 @@ export default function CandidateFlow() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || "Failed to load flow state");
       const stage = (data?.stage as string) || "terms";
-      setEffectiveStage(stage);
-      setCurrentStage(stage);
+      const isCert = Boolean(data?.certified) || stage === "certified" || data?.crm_stage === "certified";
+      const normalizedStage = isCert ? "certified" : stage;
+      setEffectiveStage(normalizedStage);
+      setCurrentStage(normalizedStage);
+      if (isCert) {
+        setCandidate((prev) =>
+          prev
+            ? {
+                ...prev,
+                certified: true,
+                crmStage: "certified",
+                currentStage: "certified",
+              }
+            : prev
+        );
+      }
       return data;
     } catch {
-      setEffectiveStage(currentStage || "terms");
+      setEffectiveStage((prev) => prev || "terms");
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidate?.id, candidate?.publicId, currentStage]);
+  }, [candidate?.id, candidate?.publicId]);
 
   useEffect(() => {
     void loadFlowState();
@@ -1071,6 +1089,8 @@ export default function CandidateFlow() {
   });
   const [saveProfileMsg, setSaveProfileMsg] = useState("");
   const [certSavedMsg, setCertSavedMsg] = useState("");
+  const [isExportingCertPdf, setIsExportingCertPdf] = useState(false);
+  const certCardRef = useRef<HTMLDivElement | null>(null);
   // Optional credentials change (email/password)
   const [profCurrentPw, setProfCurrentPw] = useState("");
   const [profNewPw, setProfNewPw] = useState("");
@@ -1218,8 +1238,8 @@ export default function CandidateFlow() {
   };
 
   // Load candidate session from URL or localStorage
-  const loadSession = async () => {
-    const parts = path.split("/").filter(Boolean);
+  const loadSession = async (isCancelled?: () => boolean) => {
+    const parts = (typeof window !== "undefined" ? window.location.pathname : path).split("/").filter(Boolean);
     const candIndex = parts.findIndex(p => {
       const lower = p.toLowerCase();
       return lower.startsWith("candidate") || lower.startsWith("cand");
@@ -1310,7 +1330,7 @@ export default function CandidateFlow() {
               company_id: c.companyId || c.company_id || rpcRes?.company?.id || routeCompId || undefined,
               roleName: c.role_name || c.roleName || rpcRes?.project?.role_name || "",
               currentStage: c.current_stage || "terms",
-              registeredVia: c.registered_via || "telegram",
+              registeredVia: c.registeredVia || c.registered_via || "email",
               phone: c.phone || "",
               avatarUrl: c.avatar_url || "",
               resumeUrl: c.resume_url || "",
@@ -1334,6 +1354,9 @@ export default function CandidateFlow() {
             cabinetProject = rpcRes.project || null;
             cabinetCompany = rpcRes.company || null;
             cabinetEmployerContacts = rpcRes.employer_contacts || null;
+            if (Array.isArray(rpcRes.employer_contacts_list)) {
+              setEmployerContactsList(rpcRes.employer_contacts_list);
+            }
             if (rpcRes.scores) {
               const sc = rpcRes.scores;
               (activeCand as any).scores = {
@@ -1367,10 +1390,13 @@ export default function CandidateFlow() {
               fullName: resolvedFullName,
               projectId: rawC.project_id || rawC.projectId,
               companyId: rawC.company_id || rawC.companyId,
+              registeredVia: rawC.registeredVia || rawC.registered_via || "email",
             };
           }
         }
       }
+
+      if (isCancelled?.()) return;
 
       if (activeCand) {
         setCandidate(activeCand);
@@ -1419,29 +1445,40 @@ export default function CandidateFlow() {
           social_github: activeCand.socialGithub || "",
         });
 
+        if (isCancelled?.()) return;
+
+        // Re-read current browser URL after async fetches so fast user tab switches
+        // (or StrictMode cleanup) are never overwritten by a stale closure path.
+        const liveParts = (typeof window !== "undefined" ? window.location.pathname : path).split("/").filter(Boolean);
+        const liveCandIndex = liveParts.findIndex(p => {
+          const lower = p.toLowerCase();
+          return lower.startsWith("candidate") || lower.startsWith("cand");
+        });
+        const liveBarePid = liveCandIndex === -1 && liveParts[0] && /^\d{4,}$/.test(liveParts[0]);
+
         // Determine tabs
         let parsedTab = "profile";
         let parsedSubTab = "";
 
-        if (candIndex !== -1) {
-          if (candIndex === 0) {
-            parsedTab = parts[1] || "profile";
-            parsedSubTab = parts[2] || "";
-          } else if (candIndex >= 2) {
-            parsedTab = parts[3] || "profile";
-            parsedSubTab = parts[4] || "";
+        if (liveCandIndex !== -1) {
+          if (liveCandIndex === 0) {
+            parsedTab = liveParts[1] || "profile";
+            parsedSubTab = liveParts[2] || "";
+          } else if (liveCandIndex >= 2) {
+            parsedTab = liveParts[3] || "profile";
+            parsedSubTab = liveParts[4] || "";
           }
         } else {
-          if (barePidMode) {
+          if (liveBarePid) {
             // /{pid}/{tab}/{subtab?}
-            parsedTab = parts[1] || "profile";
-            parsedSubTab = parts[2] || "";
-          } else if (parts[0] && parts[0].startsWith("candidate")) {
-            parsedTab = parts[1] || "profile";
-            parsedSubTab = parts[2] || "";
-          } else if (parts[0] === "candidate") {
-            parsedTab = parts[1] || "profile";
-            parsedSubTab = parts[2] || "";
+            parsedTab = liveParts[1] || "profile";
+            parsedSubTab = liveParts[2] || "";
+          } else if (liveParts[0] && liveParts[0].startsWith("candidate")) {
+            parsedTab = liveParts[1] || "profile";
+            parsedSubTab = liveParts[2] || "";
+          } else if (liveParts[0] === "candidate") {
+            parsedTab = liveParts[1] || "profile";
+            parsedSubTab = liveParts[2] || "";
           }
         }
 
@@ -1526,14 +1563,17 @@ export default function CandidateFlow() {
             } as any);
             setProjectFull(p);
             if (p.company) setCompanyFull(p.company);
-            if (p.employer_name || p.employer?.contact_name || p.employer?.name) {
-              setEmployerContacts(prev => ({
-                ...prev,
-                name: prev.name || p.employer_name || p.employer?.contact_name || p.employer?.name || null,
-                email: prev.email || p.employer?.contact_email || p.employer?.email || null,
-                phone: prev.phone || p.employer?.contact_phone || p.employer?.phone || null,
-                telegram: prev.telegram || p.employer?.telegram || null,
-              }));
+            const contactSrc = p.responsible_contact || p.employer;
+            if (Array.isArray(p.responsible_contacts) && p.responsible_contacts.length > 0) {
+              setEmployerContactsList(p.responsible_contacts);
+            }
+            if (p.employer_name || contactSrc?.contact_name || contactSrc?.name || contactSrc?.email || contactSrc?.phone || contactSrc?.telegram) {
+              setEmployerContacts({
+                name: contactSrc?.name || contactSrc?.contact_name || p.employer_name || null,
+                email: contactSrc?.email || contactSrc?.contact_email || null,
+                phone: contactSrc?.phone || contactSrc?.contact_phone || null,
+                telegram: contactSrc?.telegram || contactSrc?.contact_telegram || null,
+              });
             }
           }
         }
@@ -1541,12 +1581,16 @@ export default function CandidateFlow() {
     } catch (err) {
       console.error("Error loading candidate session:", err);
     } finally {
-      setSessionLoading(false);
+      if (!isCancelled?.()) setSessionLoading(false);
     }
   };
 
   useEffect(() => {
-    loadSession();
+    let cancelled = false;
+    void loadSession(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Серверная синхронизация этапа через /api/candidate/stage
@@ -2865,9 +2909,23 @@ export default function CandidateFlow() {
                   <h3 className="font-bold text-sm border-b border-white/10 pb-2" style={headingStyle}>Степень прохождения</h3>
                   <div className="space-y-3.5 text-sm">
                     {(() => {
+                      const stageRows = Array.isArray((candidate as any)?.stageProgress)
+                        ? (candidate as any).stageProgress
+                        : [];
+                      const corePassedCount = ["prof", "prod", "sys"].filter((prefix) =>
+                        stageRows.some(
+                          (p: any) =>
+                            String(p?.stage || "").toLowerCase().includes(prefix) &&
+                            (Boolean(p?.passed) || p?.passed_at != null || (p?.best_score != null && Number(p.best_score) >= 70))
+                        )
+                      ).length;
                       const cStage = (candidate as any)?.crmStage || (candidate as any)?.crm_stage || (candidate as any)?.currentStage || (candidate as any)?.stage || effectiveStage || "terms";
-                      const isCert = cStage === "certified" || (candidate as any)?.certified;
-                      const isTraining = ["professional", "product", "systems", "certified"].includes(cStage);
+                      const isCert =
+                        cStage === "certified" ||
+                        effectiveStage === "certified" ||
+                        Boolean((candidate as any)?.certified) ||
+                        corePassedCount >= 3;
+                      const isTraining = isCert || ["professional", "product", "systems", "certified"].includes(cStage);
                       
                       const hasResume = candidate?.scores?.resumeScore != null;
                       const hasChecklist = candidate?.scores?.checklistScore != null;
@@ -3021,6 +3079,18 @@ export default function CandidateFlow() {
                   onSaved={() => { void loadFlowState(); }}
                 />
               )}
+
+              <PWAInstallCard
+                role="candidate"
+                candidateId={candidate?.publicId || candidate?.id}
+                activeTheme={activeCompanyTheme}
+              />
+
+              <NotificationSettingsPanel
+                role="candidate"
+                candidateId={candidate?.publicId || candidate?.id}
+                activeTheme={activeCompanyTheme}
+              />
               </div>
             )}
 
@@ -3255,91 +3325,123 @@ export default function CandidateFlow() {
                   </div>
                 )}
 
-                {termsSubTab === "contacts" && (
-                  <div className="space-y-4 animate-fadeIn">
-                    <span className="text-sm font-bold block" style={headingStyle}>Связь с работодателем</span>
-                    <h2 className="text-xl font-bold text-white">Контакты</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
-                      {employerContacts.name && (
-                        <div
-                          className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between"
-                          style={containerCardStyle}
-                        >
-                          <div className="text-sm text-white/70 font-bold mb-1">Работодатель / Контактное лицо</div>
-                          <div className="text-white font-bold text-sm leading-snug break-words">{employerContacts.name}</div>
-                        </div>
-                      )}
-                      <div
-                        className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between"
-                        style={containerCardStyle}
-                      >
-                        <div className="text-sm text-white/70 font-bold mb-2">Email</div>
-                        <div>
-                          {employerContacts.email ? (
-                            <a
-                              href={`mailto:${employerContacts.email}`}
-                              className="landing-btn-active inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs sm:text-sm font-bold border transition shadow-md w-full text-center"
-                              style={activeBtnStyle}
+                {termsSubTab === "contacts" && (() => {
+                  const contactsToShow =
+                    employerContactsList.length > 0
+                      ? employerContactsList
+                      : [
+                          {
+                            id: "primary",
+                            public_id: undefined as string | undefined,
+                            name: employerContacts.name || companyFull?.name || project?.companyName || "Менеджер компании",
+                            roleLabel: employerContacts.roleLabel || "Ответственный за вакансию",
+                            email: employerContacts.email || "",
+                            phone: employerContacts.phone || "",
+                            telegram: employerContacts.telegram || "",
+                          },
+                        ];
+                  return (
+                    <div className="space-y-4 animate-fadeIn">
+                      <span className="text-sm font-bold block" style={headingStyle}>Связь с работодателем</span>
+                      <h2 className="text-xl font-bold text-white">
+                        {contactsToShow.length > 1 ? `Контакты ответственных (${contactsToShow.length})` : "Контакты"}
+                      </h2>
+                      <div className="space-y-4">
+                        {contactsToShow.map((cItem, cIdx) => {
+                          const rawTg = String(cItem.telegram || "").trim().replace(/^@+/, "");
+                          const tgHref = rawTg.startsWith("http") ? rawTg : `https://t.me/${rawTg}`;
+                          return (
+                            <div
+                              key={String(cItem.id || cItem.public_id || cIdx)}
+                              className={
+                                contactsToShow.length > 1
+                                  ? "section-card liquid-glass-card bg-transparent p-4 sm:p-5 border backdrop-blur-xl space-y-3.5"
+                                  : ""
+                              }
+                              style={contactsToShow.length > 1 ? containerCardStyle : undefined}
                             >
-                              <Mail className="w-4 h-4 shrink-0" />
-                              <span className="break-all">{employerContacts.email}</span>
-                            </a>
-                          ) : (
-                            <span className="text-white/60 text-sm">—</span>
-                          )}
-                        </div>
-                      </div>
-                      <div
-                        className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between"
-                        style={containerCardStyle}
-                      >
-                        <div className="text-sm text-white/70 font-bold mb-2">Телефон</div>
-                        <div>
-                          {employerContacts.phone ? (
-                            <a
-                              href={`tel:${(employerContacts.phone || "").replace(/[^\d+]/g, "")}`}
-                              className="landing-btn-active inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs sm:text-sm font-bold border transition shadow-md w-full text-center"
-                              style={activeBtnStyle}
-                            >
-                              <HelpCircle className="w-4 h-4 shrink-0" />
-                              <span className="break-all">{employerContacts.phone}</span>
-                            </a>
-                          ) : (
-                            <span className="text-white/60 text-sm">—</span>
-                          )}
-                        </div>
-                      </div>
-                      <div
-                        className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between"
-                        style={containerCardStyle}
-                      >
-                        <div className="text-sm text-white/70 font-bold mb-2">Telegram</div>
-                        <div>
-                          {employerContacts.telegram ? (
-                            (() => {
-                              const raw = (employerContacts.telegram || "").trim().replace(/^@/, "");
-                              const href = raw.startsWith("http") ? raw : `https://t.me/${raw}`;
-                              return (
-                                <a
-                                  href={href}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="landing-btn-active inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs sm:text-sm font-bold border transition shadow-md w-full text-center"
-                                  style={activeBtnStyle}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-[14px]">
+                                <div
+                                  className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between min-w-0"
+                                  style={containerCardStyle}
                                 >
-                                  <Send className="w-4 h-4 shrink-0" />
-                                  <span className="break-all">@{raw}</span>
-                                </a>
-                              );
-                            })()
-                          ) : (
-                            <span className="text-white/60 text-sm">—</span>
-                          )}
-                        </div>
+                                  <div className="text-[14px] text-white/70 font-bold mb-2">
+                                    {cItem.roleLabel || "Ответственный за вакансию"}
+                                  </div>
+                                  <div className="text-white font-bold text-[15px] leading-snug break-words">
+                                    {cItem.name || companyFull?.name || project?.companyName || "Менеджер компании"}
+                                  </div>
+                                </div>
+                                <div
+                                  className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between min-w-0"
+                                  style={containerCardStyle}
+                                >
+                                  <div className="text-[14px] text-white/70 font-bold mb-2">Email</div>
+                                  <div className="min-w-0">
+                                    {cItem.email ? (
+                                      <a
+                                        href={`mailto:${cItem.email}`}
+                                        className="landing-btn-active inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-[14px] font-bold border transition shadow-md w-full text-center min-w-0"
+                                        style={activeBtnStyle}
+                                      >
+                                        <Mail className="w-4 h-4 shrink-0" />
+                                        <span className="break-words overflow-hidden">{cItem.email}</span>
+                                      </a>
+                                    ) : (
+                                      <span className="text-white/60 text-[14px]">—</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div
+                                  className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between min-w-0"
+                                  style={containerCardStyle}
+                                >
+                                  <div className="text-[14px] text-white/70 font-bold mb-2">Телефон</div>
+                                  <div className="min-w-0">
+                                    {cItem.phone ? (
+                                      <a
+                                        href={`tel:${String(cItem.phone || "").replace(/[^\d+]/g, "")}`}
+                                        className="landing-btn-active inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-[14px] font-bold border transition shadow-md w-full text-center min-w-0"
+                                        style={activeBtnStyle}
+                                      >
+                                        <HelpCircle className="w-4 h-4 shrink-0" />
+                                        <span className="whitespace-nowrap">{cItem.phone}</span>
+                                      </a>
+                                    ) : (
+                                      <span className="text-white/60 text-[14px]">—</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div
+                                  className="section-card liquid-glass-card bg-transparent p-4 border backdrop-blur-xl flex flex-col justify-between min-w-0"
+                                  style={containerCardStyle}
+                                >
+                                  <div className="text-[14px] text-white/70 font-bold mb-2">Telegram</div>
+                                  <div className="min-w-0">
+                                    {rawTg ? (
+                                      <a
+                                        href={tgHref}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="landing-btn-active inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-[14px] font-bold border transition shadow-md w-full text-center min-w-0"
+                                        style={activeBtnStyle}
+                                      >
+                                        <Send className="w-4 h-4 shrink-0" />
+                                        <span className="break-words overflow-hidden">@{rawTg}</span>
+                                      </a>
+                                    ) : (
+                                      <span className="text-white/60 text-[14px]">—</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
               </div>
 
@@ -4022,7 +4124,24 @@ export default function CandidateFlow() {
         {activeTab === "certified" && (
           <Reveal key="tab-certified" direction="scale" className="space-y-8 max-w-2xl mx-auto">
             {(() => {
-              const certUnlocked = effectiveStage === "certified";
+              const stageRows = Array.isArray((candidate as any)?.stageProgress)
+                ? (candidate as any).stageProgress
+                : [];
+              const corePassedCount = ["prof", "prod", "sys"].filter((prefix) =>
+                stageRows.some(
+                  (p: any) =>
+                    String(p?.stage || "").toLowerCase().includes(prefix) &&
+                    (Boolean(p?.passed) || p?.passed_at != null || (p?.best_score != null && Number(p.best_score) >= 70))
+                )
+              ).length;
+              const certUnlocked =
+                effectiveStage === "certified" ||
+                (candidate as any)?.crmStage === "certified" ||
+                (candidate as any)?.crm_stage === "certified" ||
+                (candidate as any)?.stage === "certified" ||
+                candidate?.currentStage === "certified" ||
+                Boolean((candidate as any)?.certified) ||
+                corePassedCount >= 3;
               return <>
             {!certUnlocked && (
               <div className="section-card liquid-glass-card bg-transparent border border-white/20 backdrop-blur-xl p-4 text-center space-y-1" style={containerCardStyle}>
@@ -4036,6 +4155,7 @@ export default function CandidateFlow() {
               <div className={certUnlocked ? "" : "filter blur-sm opacity-60"}>
             {/* Visual Issued Certificate styled like a physical luxury diploma */}
             <div
+              ref={certCardRef}
               className="bg-transparent border-8 border-double shadow-2xl p-8 relative overflow-hidden text-center select-none backdrop-blur-2xl"
               style={{
                 borderColor: activeCompanyTheme?.iconColor || "#E7C768",
@@ -4172,16 +4292,54 @@ export default function CandidateFlow() {
             {/* Actions list */}
             <div className="space-y-3">
               <button
-                disabled={!certUnlocked}
-                onClick={() => {
-                  if (!certUnlocked) return;
-                  setCertSavedMsg("Сертификат соответствия сохранен в ваше ИИ-портфолио и продублирован нанимателям в CRM!");
-                  setTimeout(() => setCertSavedMsg(""), 5000);
+                type="button"
+                disabled={!certUnlocked || isExportingCertPdf}
+                onClick={async () => {
+                  if (!certUnlocked || isExportingCertPdf || !certCardRef.current) return;
+                  setIsExportingCertPdf(true);
+                  try {
+                    const savedFilename = await aiWaitRun({
+                      title: "Создание сертификата в PDF",
+                      theme: activeCompanyTheme,
+                      stages: [
+                        "Считываем текущий стиль сертификата",
+                        "Загружаем логотип и элементы оформления",
+                        "Отрисовываем макет высокого качества",
+                        "Формируем PDF-документ",
+                        "Сохраняем файл на устройство",
+                      ],
+                      successMessage: "Готово! Сертификат сохранён в PDF",
+                      task: async (_attempt, reportProgress) => {
+                        if (!certCardRef.current) throw new Error("Макет сертификата не найден");
+                        return await exportCertificateToPdf({
+                          certificateElement: certCardRef.current,
+                          companyTheme: activeCompanyTheme,
+                          candidateName: candidate?.fullName || candidate?.name,
+                          roleName: candidate?.roleName,
+                          companyName: companyFull?.name || project?.companyName,
+                          candidatePublicId: candidate?.publicId,
+                          onProgress: reportProgress,
+                        });
+                      },
+                    });
+                    if (savedFilename) {
+                      setCertSavedMsg(`Сертификат (${savedFilename}) скачан в PDF на ваше устройство и сохранён в вашем ИИ-портфолио!`);
+                      setTimeout(() => setCertSavedMsg(""), 6000);
+                    }
+                  } catch (err) {
+                    console.error("Certificate PDF export error:", err);
+                    setCertSavedMsg("Не удалось сформировать PDF-файл. Попробуйте ещё раз.");
+                    setTimeout(() => setCertSavedMsg(""), 5000);
+                  } finally {
+                    setIsExportingCertPdf(false);
+                  }
                 }}
-                className={`w-full font-bold py-3.5 text-center shadow-lg transition flex items-center justify-center gap-2 border text-sm ${certUnlocked ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+                className={`w-full font-bold py-3.5 text-center shadow-lg transition flex items-center justify-center gap-2 border text-sm ${
+                  certUnlocked && !isExportingCertPdf ? "cursor-pointer" : "cursor-not-allowed opacity-50"
+                }`}
                 style={certUnlocked ? activeBtnStyle : inactiveBtnStyle}
               >
-                {certUnlocked ? "Сохранить сертификат в PDF" : "Сертификат недоступен"}
+                {certUnlocked ? (isExportingCertPdf ? "Создание PDF…" : "Сохранить сертификат в PDF") : "Сертификат недоступен"}
               </button>
 
               {certUnlocked && (

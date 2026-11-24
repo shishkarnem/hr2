@@ -39,19 +39,28 @@ import { useAIWait } from "../components/AIWaitProvider";
 import { ruField } from "@/lib/fieldLabels";
 import { useAIReady } from "../lib/aiReady";
 import SitePreview from "../components/SitePreview";
+import SiteEditorPreview from "../components/company/SiteEditorPreview";
 import VacancyEditor from "../components/VacancyEditor";
 import { DocumentUploader } from "../components/DocumentUploader";
 import { scoreTone, type ToneLabel } from "@/lib/scoreTone";
 import NotificationsBell from "@/components/NotificationsBell";
+import PWAInstallCard from "@/components/pwa/PWAInstallCard";
+import NotificationSettingsPanel from "@/components/notifications/NotificationSettingsPanel";
+import TelegramTargetsEditor, {
+  normalizeTargetsCommaList,
+  validateTelegramTargetsInput,
+} from "@/components/notifications/TelegramTargetsEditor";
 import LandingPreloader from "../components/LandingPreloader";
 import { rrImg, DEFAULT_RR_LOGO_URL } from "@/lib/img";
 import AuthModal from "../components/AuthModal";
 import AudioField from "../components/AudioField";
-import { CrmFilterModal, KanbanColumnModal, TableColumnModal, type CrmFieldFilters, type AvailableCustomField } from "@/components/crm/CrmModals";
+import { CrmFilterModal, KanbanColumnModal, TableColumnModal, type CrmFieldFilters, type AvailableCustomField, type CrmVacancyOption } from "@/components/crm/CrmModals";
 import CrmConstructorModal from "@/components/CrmConstructorModal";
 import CrmDialogsModal from "@/components/CrmDialogsModal";
 import AcademyModal from "@/components/AcademyModal";
 import ArchiveVacancyModal from "@/components/vacancies/ArchiveVacancyModal";
+import { VacancyResponsiblesModal } from "@/components/vacancies/VacancyResponsiblesModal";
+import { VacancyResponsiblesBadge, type ResponsiblePreviewPerson } from "@/components/vacancies/VacancyResponsiblesBadge";
 import {
   parseVacancyCandidateFieldsConfig,
   extractStandardFieldsFromCandidateRow,
@@ -225,7 +234,7 @@ import {
   SystemView
 } from "../components/VacancySections";
 import CandidateDetailsModal from "../components/CandidateDetailsModal";
-import OfferConsent from "../components/OfferConsent";
+import LegalConsentBlock from "../components/legal/LegalConsentBlock";
 import HHTemplatesSection from "../components/HHTemplatesSection";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -832,7 +841,7 @@ export default function EmployerPanel() {
   const [tempProfilePhone, setTempProfilePhone] = useState("");
   const [tempTelegramUsername, setTempTelegramUsername] = useState("");
   const [tempTelegramChatId, setTempTelegramChatId] = useState("");
-  const [editModalTab, setEditModalTab] = useState<"profile" | "telegram" | "password">("profile");
+  const [editModalTab, setEditModalTab] = useState<"profile" | "telegram" | "pwa" | "password">("profile");
 
   const [telegramIdState, setTelegramIdState] = useState("");
   const [telegramPhoto, setTelegramPhoto] = useState("");
@@ -846,11 +855,15 @@ export default function EmployerPanel() {
   const [telegramChannelIds, setTelegramChannelIds] = useState<string>("");
   const [telegramNotifyEvents, setTelegramNotifyEvents] = useState({
     new_candidate: true,
-    interview_passed: true,
-    test_passed: true,
+    interview_stages: true,
+    interview_reject: true,
+    interview_success: true,
     training_progress: true,
+    certificate_ready: true,
     balance_change: true,
-    daily_digest: false,
+    low_balance_rr: true,
+    low_general_limits: true,
+    low_vacancy_limits: true,
   });
 
   // Temp states for editing
@@ -858,12 +871,21 @@ export default function EmployerPanel() {
   const [tempTelegramChannelIds, setTempTelegramChannelIds] = useState<string>("");
   const [tempTelegramNotifyEvents, setTempTelegramNotifyEvents] = useState({
     new_candidate: true,
-    interview_passed: true,
-    test_passed: true,
+    interview_stages: true,
+    interview_reject: true,
+    interview_success: true,
     training_progress: true,
+    certificate_ready: true,
     balance_change: true,
-    daily_digest: false,
+    low_balance_rr: true,
+    low_general_limits: true,
+    low_vacancy_limits: true,
   });
+  const [telegramModalValidationMsg, setTelegramModalValidationMsg] = useState<string>("");
+  const [editingCompanyTeam, setEditingCompanyTeam] = useState<
+    Array<{ id: string; public_id?: string; name: string; email?: string; roleLabel: string }>
+  >([]);
+  const [loadingCompanyTeam, setLoadingCompanyTeam] = useState(false);
 
   const [telegramChatSaved, setTelegramChatSaved] = useState<boolean>(false);
   const [telegramChatSaving, setTelegramChatSaving] = useState<boolean>(false);
@@ -944,6 +966,7 @@ export default function EmployerPanel() {
   const [historyDateTo, setHistoryDateTo] = useState<string>("");
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedPlanToBuy, setSelectedPlanToBuy] = useState<"silver" | "gold" | null>(null);
+  const [planLegalOk, setPlanLegalOk] = useState<boolean>(true);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   // Admin mode: разрешает администраторам открывать кабинет демо-кандидата и
@@ -1602,6 +1625,65 @@ export default function EmployerPanel() {
 
   // Project (Vacancy) edit state
   const [editingProject, setEditingProject] = useState<JobProject | null>(null);
+  const editingCompanyIdForTeam = String(
+    (editingProject as any)?.company_id ||
+      (editingProject as any)?.companyId ||
+      (editingProject as any)?.company_public_id ||
+      (editingProject as any)?.companyPublicId ||
+      companiesList.find((c) => c.name?.toLowerCase() === (editingProject?.companyName || "").toLowerCase())?.id ||
+      ""
+  ).trim();
+
+  useEffect(() => {
+    if (!editingProject || !editingCompanyIdForTeam) {
+      setEditingCompanyTeam([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCompanyTeam(true);
+    fetch(`/api/companies/${encodeURIComponent(editingCompanyIdForTeam)}/members`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const list: Array<{ id: string; public_id?: string; name: string; email?: string; roleLabel: string }> = [];
+        const seen = new Set<string>();
+        const pushPerson = (raw: any, roleLabel: string) => {
+          if (!raw) return;
+          const uid = String(raw.employer_id || raw.public_id || raw.employer_public_id || raw.id || "").trim();
+          const pub = String(raw.employer_public_id || raw.public_id || "").trim();
+          const key = pub || uid;
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          const displayName = String(
+            raw.name || raw.contact_name || raw.email || raw.contact_email || `Участник #${pub || uid}`
+          ).trim();
+          list.push({
+            id: uid,
+            public_id: pub || undefined,
+            name: displayName,
+            email: raw.email || raw.contact_email || undefined,
+            roleLabel,
+          });
+        };
+        if (data.owner) pushPerson(data.owner, "Владелец компании");
+        if (Array.isArray(data.members)) {
+          for (const m of data.members) {
+            if (m?.status === "inactive" || m?.status === "removed") continue;
+            pushPerson(m, m?.role === "admin" ? "Администратор" : "Менеджер команды");
+          }
+        }
+        setEditingCompanyTeam(list);
+      })
+      .catch(() => {
+        if (!cancelled) setEditingCompanyTeam([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCompanyTeam(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [Boolean(editingProject), editingCompanyIdForTeam]);
   // Raw OCR/AI-extracted text from a document uploaded inside the vacancy
   // EDITOR modal — fed into `handleEnhanceAllVacancyLandingFields` as
   // `file_context` so beautify-all reads facts from the uploaded file.
@@ -1620,6 +1702,66 @@ export default function EmployerPanel() {
   const [vacancyToArchive, setVacancyToArchive] = useState<any | null>(null);
   const [vacanciesFilterTab, setVacanciesFilterTab] = useState<"active" | "paused" | "archived" | "all">("active");
   const [updatingStatusProjectId, setUpdatingStatusProjectId] = useState<string | null>(null);
+  const [responsiblesModalTarget, setResponsiblesModalTarget] = useState<{
+    project: any;
+    mode: "card" | "editor";
+  } | null>(null);
+  const [companyTeamMembersCache, setCompanyTeamMembersCache] = useState<Record<string, ResponsiblePreviewPerson[]>>({});
+
+  useEffect(() => {
+    const uniqueCompIds = Array.from(
+      new Set(
+        projects
+          .map((p: any) => String(p.company_id || p.companyId || "").trim())
+          .filter((cid) => cid && !companyTeamMembersCache[cid])
+      )
+    );
+    if (uniqueCompIds.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, ResponsiblePreviewPerson[]> = {};
+      await Promise.all(
+        uniqueCompIds.slice(0, 12).map(async (cid) => {
+          try {
+            const res = await fetch(`/api/companies/${encodeURIComponent(cid)}/members`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const list: ResponsiblePreviewPerson[] = [];
+            const seen = new Set<string>();
+            const pushP = (raw: any, roleLabel: string) => {
+              if (!raw) return;
+              const idVal = String(raw.employer_id || raw.id || "").trim();
+              const pubVal = String(raw.employer_public_id || raw.public_id || "").trim();
+              const key = (pubVal || idVal).replace(/^emp-?/i, "");
+              if (!key || seen.has(key)) return;
+              seen.add(key);
+              list.push({
+                id: idVal || pubVal,
+                public_id: pubVal || undefined,
+                name: String(raw.name || raw.contact_name || raw.email || `Сотрудник #${key}`).trim(),
+                email: raw.email || raw.contact_email || undefined,
+                roleLabel,
+              });
+            };
+            if (data?.owner) pushP(data.owner, "Владелец компании");
+            if (Array.isArray(data?.members)) {
+              for (const m of data.members) {
+                if (["revoked", "removed", "inactive"].includes(String(m?.status || "").toLowerCase())) continue;
+                pushP(m, m?.role === "admin" ? "Администратор" : "Менеджер команды");
+              }
+            }
+            updates[cid] = list;
+          } catch {}
+        })
+      );
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setCompanyTeamMembersCache((prev) => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projects, companyTeamMembersCache]);
 
   const isRoleSlugDuplicate = useMemo(() => {
     if (!editingProject?.roleName || !editingProject.roleName.trim()) return false;
@@ -2042,12 +2184,34 @@ export default function EmployerPanel() {
             setProfileTitle(u.title || "");
             setProfilePhone(u.phone || u.contact_phone || "");
             setTelegramUsernameState((u.telegram || u.contact_telegram || u.telegram_username || "").replace(/^@+/, ""));
-            if (u.telegram_chat_id || u.telegramChatId) setTelegramChatId(String(u.telegram_chat_id || u.telegramChatId));
             const notifCfgU = u.notifications_config || null;
+            const resolvedPersonalU =
+              u.telegram_chat_id !== undefined && u.telegram_chat_id !== null
+                ? String(u.telegram_chat_id)
+                : u.telegramChatId !== undefined && u.telegramChatId !== null
+                ? String(u.telegramChatId)
+                : notifCfgU?.telegram_user_ids !== undefined
+                ? String(notifCfgU.telegram_user_ids || "")
+                : "";
+            setTelegramChatId(resolvedPersonalU);
             if (notifCfgU) {
-              if (notifCfgU.telegram_group_ids) setTelegramGroupIds(String(notifCfgU.telegram_group_ids));
-              if (notifCfgU.telegram_channel_ids) setTelegramChannelIds(String(notifCfgU.telegram_channel_ids));
-              if (notifCfgU.events) setTelegramNotifyEvents((prev) => ({ ...prev, ...notifCfgU.events }));
+              setTelegramGroupIds(String(notifCfgU.telegram_group_ids || ""));
+              setTelegramChannelIds(String(notifCfgU.telegram_channel_ids || ""));
+              if (notifCfgU.events || notifCfgU.event_channels) {
+                setTelegramNotifyEvents((prev) => ({
+                  ...prev,
+                  new_candidate: notifCfgU.event_channels?.new_candidate?.telegram ?? notifCfgU.events?.new_candidate ?? prev.new_candidate,
+                  interview_stages: notifCfgU.event_channels?.interview_stages?.telegram ?? notifCfgU.events?.interview_stages ?? prev.interview_stages,
+                  interview_reject: notifCfgU.event_channels?.interview_reject?.telegram ?? notifCfgU.events?.interview_reject ?? prev.interview_reject,
+                  interview_success: notifCfgU.event_channels?.interview_success?.telegram ?? notifCfgU.events?.interview_success ?? prev.interview_success,
+                  training_progress: notifCfgU.event_channels?.training_progress?.telegram ?? notifCfgU.events?.training_progress ?? prev.training_progress,
+                  certificate_ready: notifCfgU.event_channels?.certificate_ready?.telegram ?? notifCfgU.events?.certificate_ready ?? prev.certificate_ready,
+                  balance_change: notifCfgU.event_channels?.balance_change?.telegram ?? notifCfgU.events?.balance_change ?? prev.balance_change,
+                  low_balance_rr: notifCfgU.event_channels?.low_balance_rr?.telegram ?? notifCfgU.events?.low_balance_rr ?? prev.low_balance_rr,
+                  low_general_limits: notifCfgU.event_channels?.low_general_limits?.telegram ?? notifCfgU.events?.low_general_limits ?? prev.low_general_limits,
+                  low_vacancy_limits: notifCfgU.event_channels?.low_vacancy_limits?.telegram ?? notifCfgU.events?.low_vacancy_limits ?? prev.low_vacancy_limits,
+                }));
+              }
             }
             if (u.balance !== undefined) setBalance(Number(u.balance));
             if (u.interview_credits !== undefined) setInterviewCredits(Number(u.interview_credits));
@@ -2079,12 +2243,34 @@ export default function EmployerPanel() {
             setCompanyNameState(pubData.company_name || pubData.companyName || "");
             setProfilePhone(pubData.phone || pubData.contact_phone || "");
             setTelegramUsernameState((pubData.contact_telegram || pubData.telegram_username || pubData.telegram || "").replace(/^@+/, ""));
-            if (pubData.telegram_chat_id || pubData.telegramChatId) setTelegramChatId(String(pubData.telegram_chat_id || pubData.telegramChatId));
             const notifCfgPub = pubData.notifications_config || null;
+            const resolvedPersonalPub =
+              pubData.telegram_chat_id !== undefined && pubData.telegram_chat_id !== null
+                ? String(pubData.telegram_chat_id)
+                : pubData.telegramChatId !== undefined && pubData.telegramChatId !== null
+                ? String(pubData.telegramChatId)
+                : notifCfgPub?.telegram_user_ids !== undefined
+                ? String(notifCfgPub.telegram_user_ids || "")
+                : "";
+            setTelegramChatId(resolvedPersonalPub);
             if (notifCfgPub) {
-              if (notifCfgPub.telegram_group_ids) setTelegramGroupIds(String(notifCfgPub.telegram_group_ids));
-              if (notifCfgPub.telegram_channel_ids) setTelegramChannelIds(String(notifCfgPub.telegram_channel_ids));
-              if (notifCfgPub.events) setTelegramNotifyEvents((prev) => ({ ...prev, ...notifCfgPub.events }));
+              setTelegramGroupIds(String(notifCfgPub.telegram_group_ids || ""));
+              setTelegramChannelIds(String(notifCfgPub.telegram_channel_ids || ""));
+              if (notifCfgPub.events || notifCfgPub.event_channels) {
+                setTelegramNotifyEvents((prev) => ({
+                  ...prev,
+                  new_candidate: notifCfgPub.event_channels?.new_candidate?.telegram ?? notifCfgPub.events?.new_candidate ?? prev.new_candidate,
+                  interview_stages: notifCfgPub.event_channels?.interview_stages?.telegram ?? notifCfgPub.events?.interview_stages ?? prev.interview_stages,
+                  interview_reject: notifCfgPub.event_channels?.interview_reject?.telegram ?? notifCfgPub.events?.interview_reject ?? prev.interview_reject,
+                  interview_success: notifCfgPub.event_channels?.interview_success?.telegram ?? notifCfgPub.events?.interview_success ?? prev.interview_success,
+                  training_progress: notifCfgPub.event_channels?.training_progress?.telegram ?? notifCfgPub.events?.training_progress ?? prev.training_progress,
+                  certificate_ready: notifCfgPub.event_channels?.certificate_ready?.telegram ?? notifCfgPub.events?.certificate_ready ?? prev.certificate_ready,
+                  balance_change: notifCfgPub.event_channels?.balance_change?.telegram ?? notifCfgPub.events?.balance_change ?? prev.balance_change,
+                  low_balance_rr: notifCfgPub.event_channels?.low_balance_rr?.telegram ?? notifCfgPub.events?.low_balance_rr ?? prev.low_balance_rr,
+                  low_general_limits: notifCfgPub.event_channels?.low_general_limits?.telegram ?? notifCfgPub.events?.low_general_limits ?? prev.low_general_limits,
+                  low_vacancy_limits: notifCfgPub.event_channels?.low_vacancy_limits?.telegram ?? notifCfgPub.events?.low_vacancy_limits ?? prev.low_vacancy_limits,
+                }));
+              }
             }
             if (pubData.balance !== undefined) setBalance(Number(pubData.balance));
             if (pubData.interview_credits !== undefined) setInterviewCredits(Number(pubData.interview_credits));
@@ -2105,6 +2291,7 @@ export default function EmployerPanel() {
         setCompanyNameState(cachedUser.companyName || cachedUser.company_name || "");
         setProfilePhone(cachedUser.phone || cachedUser.contact_phone || "");
         setTelegramUsernameState((cachedUser.telegram || cachedUser.contact_telegram || "").replace(/^@+/, ""));
+        if (cachedUser.telegram_chat_id !== undefined) setTelegramChatId(String(cachedUser.telegram_chat_id || ""));
         if (cachedUser.balance !== undefined) setBalance(Number(cachedUser.balance));
         return;
       }
@@ -2131,7 +2318,7 @@ export default function EmployerPanel() {
             setProfilePhone(empPhone);
             setCompanyNameState(empCompany);
             setTelegramUsernameState(empTg.replace(/^@+/, ""));
-            if ((emp as any).telegram_chat_id) setTelegramChatId(String((emp as any).telegram_chat_id));
+            setTelegramChatId(String((emp as any).telegram_chat_id || ""));
             if (emp.created_at) setEmployerCreatedAt(emp.created_at);
           }
         } catch (dbErr) {
@@ -2158,6 +2345,7 @@ export default function EmployerPanel() {
 
       const payload = customPayload ? { ...defaultPayload, ...customPayload } : defaultPayload;
 
+      let backendUpdated = false;
       // Update via backend API
       try {
         const res = await fetch("/api/auth/employer/update-profile", {
@@ -2165,25 +2353,35 @@ export default function EmployerPanel() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        if (data.user) {
-          if (data.user.name) setProfileName(data.user.name);
-          if (data.user.phone) setProfilePhone(data.user.phone);
-          if (data.user.email) setProfileEmail(data.user.email);
-          if (data.user.companyName) setCompanyNameState(data.user.companyName);
-          if (data.user.telegram) setTelegramUsernameState(data.user.telegram.replace(/^@+/, ""));
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.user) {
+          backendUpdated = true;
+          try {
+            const existingRaw = localStorage.getItem("emp_user");
+            const existingParsed = existingRaw ? JSON.parse(existingRaw) : {};
+            localStorage.setItem("emp_user", JSON.stringify({ ...existingParsed, ...data.user }));
+          } catch {}
+          if (data.user.name !== undefined) setProfileName(data.user.name || "");
+          if (data.user.phone !== undefined) setProfilePhone(data.user.phone || "");
+          if (data.user.email !== undefined) setProfileEmail(data.user.email || "");
+          if (data.user.companyName !== undefined) setCompanyNameState(data.user.companyName || "");
+          if (data.user.telegram !== undefined) setTelegramUsernameState(String(data.user.telegram || "").replace(/^@+/, ""));
+          if (data.user.telegram_chat_id !== undefined) setTelegramChatId(String(data.user.telegram_chat_id ?? ""));
+          if (data.user.notifications_config) {
+            setTelegramGroupIds(String(data.user.notifications_config.telegram_group_ids ?? ""));
+            setTelegramChannelIds(String(data.user.notifications_config.telegram_channel_ids ?? ""));
+          }
         }
       } catch (err) {
         console.error("Backend profile update error:", err);
       }
 
-      // Also try database as fallback
-      try {
-        const { dbClient } = await import("@/lib/dbClient");
-        if (employerId) {
-          await dbClient
-            .from("employers")
-            .update({
+      // Database fallback only if backend endpoint was unavailable
+      if (!backendUpdated) {
+        try {
+          const { dbClient } = await import("@/lib/dbClient");
+          if (employerId) {
+            const dbPatch: any = {
               name: payload.name,
               contact_name: payload.name,
               company_name: payload.company_name,
@@ -2193,15 +2391,22 @@ export default function EmployerPanel() {
               contact_phone: payload.phone,
               telegram_username: payload.telegram ? payload.telegram.replace(/^@+/, "") : null,
               contact_telegram: payload.telegram ? payload.telegram.replace(/^@+/, "") : null,
-            } as any)
-            .or(`public_id.eq.${employerId},id.eq.${employerId}`);
-        }
-      } catch {}
+            };
+            if (payload.telegram_chat_id !== undefined) {
+              dbPatch.telegram_chat_id = String(payload.telegram_chat_id ?? "");
+            }
+            await dbClient
+              .from("employers")
+              .update(dbPatch)
+              .or(`public_id.eq.${employerId},id.eq.${employerId}`);
+          }
+        } catch {}
+      }
 
       setIsProfileSaved(true);
       addAuditEvent("success", "Профиль сохранен", "HR менеджер успешно обновил личные контактные данные.");
       setTimeout(() => setIsProfileSaved(false), 2500);
-      fetchEmployerData();
+      await fetchEmployerData();
     } catch (err) {
       console.error("Error updating profile:", err);
     }
@@ -2303,11 +2508,27 @@ export default function EmployerPanel() {
             companyPublicId: p.company_public_id || p.companyPublicId || p.linked_company_public_id || undefined,
             employer_id: p.employer_id || p.employerId,
             employerId: p.employer_id || p.employerId,
+            responsible_employer_id: p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId || undefined,
+            responsibleEmployerId: p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId || undefined,
+            responsible_employer_ids: Array.isArray(p.responsible_employer_ids)
+              ? p.responsible_employer_ids
+              : Array.isArray(p.responsibleEmployerIds)
+              ? p.responsibleEmployerIds
+              : p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId
+              ? [String(p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId)]
+              : [],
+            responsibleEmployerIds: Array.isArray(p.responsible_employer_ids)
+              ? p.responsible_employer_ids
+              : Array.isArray(p.responsibleEmployerIds)
+              ? p.responsibleEmployerIds
+              : p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId
+              ? [String(p.responsible_employer_id || p.responsibleEmployerId || p.employer_id || p.employerId)]
+              : [],
             employer_public_id: p.employer_public_id || p.employerPublicId || undefined,
             employerPublicId: p.employer_public_id || p.employerPublicId || undefined,
             publicVacUrl: p.publicVacUrl || undefined,
             editVacUrl: p.editVacUrl || undefined,
-            roleName: p.role_name || p.roleName || "",
+            roleName: String(p.role_name || p.roleName || "").trim(),
             salaryTerms: p.salary_terms || p.salaryTerms || undefined,
             scheduleTerms: p.schedule_terms || p.scheduleTerms || undefined,
             motivationText: p.motivation_text || p.motivationText || undefined,
@@ -2379,12 +2600,13 @@ export default function EmployerPanel() {
             fullName: c.full_name || "",
             email: c.email || "",
             phone: c.phone || "",
+            avatarUrl: c.avatar_url || c.avatarUrl || "",
             projectId: c.project_id,
             projectPublicId: c.project_public_id,
             companyId: c.company_id,
             companyName: c.company_name || "",
             companySlug: c.company_slug || undefined,
-            roleName: c.role_name || "",
+            roleName: String(c.role_name || "").trim(),
             currentStage: c.current_stage,
             crmStage: c.crm_stage || c.derived_stage || "registration",
             derivedStage: c.derived_stage,
@@ -2762,7 +2984,9 @@ export default function EmployerPanel() {
         if ((emp as any).created_at) setEmployerCreatedAt((emp as any).created_at);
         if ((emp as any).public_id) setEmployerId((emp as any).public_id);
         if (empTg) setTelegramUsernameState(empTg.replace(/^@+/, ""));
-        if ((emp as any).telegram_chat_id) setTelegramChatId(String((emp as any).telegram_chat_id));
+        if ((emp as any).telegram_chat_id !== undefined && (emp as any).telegram_chat_id !== null) {
+          setTelegramChatId(String((emp as any).telegram_chat_id));
+        }
       }
 
       const { data: prof } = await dbClient
@@ -3055,7 +3279,7 @@ export default function EmployerPanel() {
       return;
     }
     if (!topupOfferOk) {
-      setTopupError("Для оплаты необходимо согласие с публичной офертой.");
+      setTopupError("Для оплаты необходимо согласиться с офертой, политикой конфиденциальности, пользовательским соглашением и обработкой персональных данных.");
       return;
     }
     setIsToppingUp(true);
@@ -3268,6 +3492,8 @@ export default function EmployerPanel() {
         public_id: newDraftPublicId,
         employerId: employerId || "100007",
         employer_id: employerId || "100007",
+        responsibleEmployerId: employerId || "100007",
+        responsible_employer_id: employerId || "100007",
         companyName: selectedCompanyName,
         company_name: selectedCompanyName,
         companySlug: selectedCompany?.slug || "",
@@ -3548,6 +3774,12 @@ export default function EmployerPanel() {
         company_name: matchedCo?.name || ep.companyName,
         company_slug: matchedCo?.slug || ep.companySlug || (matchedCo?.name ? transliterateToSlug(matchedCo.name) : undefined),
         company_public_id: matchedCo?.public_id || ep.companyPublicId || undefined,
+        responsible_employer_id: (Array.isArray(ep.responsible_employer_ids) && ep.responsible_employer_ids[0]) || ep.responsible_employer_id || ep.responsibleEmployerId || ep.employer_id || ep.employerId || employerId || null,
+        responsible_employer_ids: Array.isArray(ep.responsible_employer_ids) && ep.responsible_employer_ids.length > 0
+          ? ep.responsible_employer_ids
+          : Array.isArray(ep.responsibleEmployerIds) && ep.responsibleEmployerIds.length > 0
+          ? ep.responsibleEmployerIds
+          : [String(ep.responsible_employer_id || ep.responsibleEmployerId || ep.employer_id || ep.employerId || employerId || "")].filter(Boolean),
         is_published: true,
         status: "active",
         salary_terms: ep.salaryTerms ?? null,
@@ -3668,7 +3900,7 @@ export default function EmployerPanel() {
 
   // Trigger simulated payment for subscription
   const handleConfirmPayment = () => {
-    if (!selectedPlanToBuy) return;
+    if (!selectedPlanToBuy || !planLegalOk) return;
     setIsProcessingPayment(true);
     
     setTimeout(() => {
@@ -4269,8 +4501,9 @@ export default function EmployerPanel() {
     const cleanPid = pidStr.replace(/^vac_?/i, "");
     const passScore = Number(projectPassScoreMap[pidStr] ?? projectPassScoreMap[cleanPid] ?? 70);
 
-    // 1. Stage 5: Interview Reject or explicit rejected decision -> low (Не подходит)
-    if (stage === "interview_reject" || cand?.hireDecision === "rejected") {
+    // 1. Stage 5: Interview Reject -> low (Не подходит).
+    // Employer hireDecision (invited/review/rejected) is a separate card badge & filter, never overrides AI verdict or stage.
+    if (stage === "interview_reject") {
       return {
         label: "low",
         txt: "Не подходит",
@@ -4397,18 +4630,92 @@ export default function EmployerPanel() {
     return myNames.sort();
   }, [isSuperAdminCrm, companiesList, candidates]);
 
-  // Roles/vacancies dropdown: only current employer's vacancies unless super-admin 100007
+  // Roles/vacancies dropdown: trimmed unique names (legacy fallback)
   const crmRoleOptions = useMemo(() => {
     if (isSuperAdminCrm) {
       const allRoles = Array.from(new Set([
-        ...projects.map((p: any) => p.roleName),
-        ...candidates.map((c: any) => c.roleName),
+        ...projects.map((p: any) => String(p.roleName || "").trim()),
+        ...candidates.map((c: any) => String(c.roleName || "").trim()),
       ])).filter(Boolean) as string[];
       return allRoles.sort();
     }
-    const myRoles = Array.from(new Set(projects.map((p: any) => p.roleName))).filter(Boolean) as string[];
+    const myRoles = Array.from(new Set(projects.map((p: any) => String(p.roleName || "").trim()))).filter(Boolean) as string[];
     return myRoles.sort();
   }, [isSuperAdminCrm, projects, candidates]);
+
+  // Unambiguous vacancy options keyed by project id (prevents conflating renamed/archived vacancies)
+  const crmVacancyOptions = useMemo<CrmVacancyOption[]>(() => {
+    const opts: CrmVacancyOption[] = [];
+    const seenProjIds = new Set<string>();
+    const knownRoles = new Set<string>();
+
+    const relevantProjects = (projects || []).filter((p: any) => {
+      if (crmFilterCompany !== "all" && (p.companyName || "") !== crmFilterCompany) return false;
+      return true;
+    });
+
+    for (const p of relevantProjects) {
+      const pid = String(p.id || "").trim();
+      const rn = String(p.roleName || "").trim();
+      if (!pid || !rn || seenProjIds.has(pid)) continue;
+      seenProjIds.add(pid);
+      knownRoles.add(rn);
+      const pub = p.public_id ? String(p.public_id).replace(/^vac_?/i, "") : "";
+      const st = String((p as any).status || "active");
+      const statusSuffix = st === "archived" ? " · архив" : st === "paused" ? " · пауза" : "";
+      const vacTag = pub ? `vac${pub}${statusSuffix}` : statusSuffix.replace(" · ", "");
+      const compSuffix = p.companyName ? ` — ${p.companyName}` : "";
+      opts.push({
+        value: `vac:${pid}`,
+        label: `${rn}${vacTag ? ` (${vacTag})` : ""}${compSuffix}`,
+        roleName: rn,
+        projectId: pid,
+        publicId: pub || undefined,
+        status: st,
+      });
+    }
+
+    const statusOrder: Record<string, number> = { active: 0, paused: 1, archived: 2 };
+    opts.sort((a, b) => {
+      const sa = statusOrder[a.status || "active"] ?? 0;
+      const sb = statusOrder[b.status || "active"] ?? 0;
+      if (sa !== sb) return sa - sb;
+      return a.label.localeCompare(b.label, "ru");
+    });
+
+    // Fallback for any candidate whose roleName is not linked to a project in `projects`
+    for (const c of scopedCandidates || []) {
+      const rn = String(c.roleName || "").trim();
+      if (!rn || rn === "—" || knownRoles.has(rn)) continue;
+      knownRoles.add(rn);
+      opts.push({
+        value: rn,
+        label: rn,
+        roleName: rn,
+      });
+    }
+
+    return opts;
+  }, [projects, scopedCandidates, crmFilterCompany]);
+
+  const matchesVacancyFilter = (cand: any, filterVal: string) => {
+    if (!filterVal || filterVal === "all") return true;
+    if (filterVal.startsWith("vac:")) {
+      const targetProjId = filterVal.slice(4);
+      const matchedProj = (projects || []).find((p: any) => String(p.id) === targetProjId);
+      const targetPub = matchedProj?.public_id ? String(matchedProj.public_id).replace(/^vac_?/i, "") : "";
+      const cPid = String(cand.projectId || cand.project_id || "");
+      const cPubPid = String(cand.projectPublicId || cand.project_public_id || "").replace(/^vac_?/i, "");
+      if (cPid && (cPid === targetProjId || (targetPub && cPid.replace(/^vac_?/i, "") === targetPub))) {
+        return true;
+      }
+      if (targetPub && cPubPid && cPubPid === targetPub) {
+        return true;
+      }
+      return false;
+    }
+    return String(cand.roleName || "—").trim() === filterVal.trim();
+  };
 
   // All custom fields created across all vacancies and candidates
   const allAvailableCustomFields = useMemo<AvailableCustomField[]>(() => {
@@ -4474,7 +4781,7 @@ export default function EmployerPanel() {
         const hay = `${cand.name || ""} ${cand.fullName || ""} ${cand.roleName || ""} ${cand.email || ""} ${cand.phone || ""} ${cand.companyName || ""} ${cand.city || ""} ${cand.citizenship || ""} ${cand.workExperience || cand.work_experience || ""} ${cand.desiredSalary || cand.desired_salary || ""} ${cand.education || ""} ${skillsText} ${stdVals} ${custVals}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      if (crmFilterRole !== "all" && (cand.roleName || "") !== crmFilterRole) return false;
+      if (!matchesVacancyFilter(cand, crmFilterRole)) return false;
       if (crmFilterCompany !== "all" && (cand.companyName || "") !== crmFilterCompany) return false;
       if (crmFilterStage !== "all" && ((cand.crmStage || "registration") !== crmFilterStage)) return false;
       if (crmFilterDecision !== "all") {
@@ -4564,7 +4871,7 @@ export default function EmployerPanel() {
 
       return true;
     });
-  }, [scopedCandidates, crmSearch, crmFilterRole, crmFilterCompany, crmFilterStage, crmFilterDecision, crmDatePreset, crmDateFrom, crmDateTo, crmFieldFilters, hireDecisionMap]);
+  }, [scopedCandidates, projects, crmSearch, crmFilterRole, crmFilterCompany, crmFilterStage, crmFilterDecision, crmDatePreset, crmDateFrom, crmDateTo, crmFieldFilters, hireDecisionMap]);
 
   // Dynamic real counts for verdict tabs reflecting all active filters!
   const verdictCounts = useMemo(() => {
@@ -4720,7 +5027,7 @@ export default function EmployerPanel() {
         if (!cName.includes(q)) return false;
       }
       if (tableColFilters.role && tableColFilters.role !== "all") {
-        if ((cand.roleName || "—") !== tableColFilters.role) return false;
+        if (!matchesVacancyFilter(cand, tableColFilters.role)) return false;
       }
       if (tableColFilters.roleSearch) {
         const q = tableColFilters.roleSearch.toLowerCase().trim();
@@ -5376,9 +5683,31 @@ export default function EmployerPanel() {
                                       onClick={() => setSelectedCandidateId((cand as any).uuid || null)}
                                       className={`bg-transparent backdrop-blur-xl border ${decBorder} p-3 rounded-2xl transition cursor-pointer shadow-lg flex flex-col gap-1.5 min-h-[105px] overflow-hidden hover:border-[#d4af37]`}
                                     >
-                                      <div className="text-[14px] font-bold text-[#fceabb] hover:underline line-clamp-1">
-                                        {cand.name}
-                                      </div>
+                                      {(() => {
+                                        const av = String((cand as any).avatarUrl || (cand as any).avatar_url || "").trim();
+                                        const isCustomAvatar =
+                                          Boolean(av) &&
+                                          !/^(none|null|undefined)$/i.test(av) &&
+                                          !/(default[-_]?avatar|avatar[-_]?default|no[-_]?avatar|placeholder|rr-logo\.png)/i.test(av);
+                                        return (
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            {isCustomAvatar && (
+                                              <img
+                                                src={rrImg(av)}
+                                                alt=""
+                                                referrerPolicy="no-referrer"
+                                                onError={(e) => {
+                                                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                                                }}
+                                                className="w-7 h-7 rounded-full object-cover border border-[#E7C768]/60 shrink-0"
+                                              />
+                                            )}
+                                            <div className="text-[14px] font-bold text-[#fceabb] hover:underline line-clamp-1 min-w-0">
+                                              {cand.name}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
                                       {kanbanCardFields.showRole && cand.roleName && (
                                         <div className="text-[14px] text-white/80 truncate">{cand.roleName}</div>
                                       )}
@@ -5618,18 +5947,25 @@ export default function EmployerPanel() {
                               <tr key={cand.id} className="hover:bg-white/5 transition">
                                 {visibleTableHeaders.map((col) => {
                                   if (col.key === "name") {
+                                    const dec = hireDecisionFor(cand);
+                                    const decMeta = dec ? hireDecisionMeta[dec] : null;
                                     return (
                                       <td key="name" className="p-3.5 font-bold text-white cursor-pointer" onClick={() => setSelectedCandidateId((cand as any).uuid || null)}>
                                         <div className="text-[#fceabb] text-[14px] hover:underline">{cand.name}</div>
                                         <div className="text-[14px] text-white/70 font-normal">{cand.email}</div>
                                         {(cand as any).phone && <div className="text-[14px] text-white/60 font-normal">{(cand as any).phone}</div>}
-                                        {(() => {
-                                          const v = aiVerdictFor(cand);
-                                          if (!v) return null;
-                                          return (
-                                            <span className={`inline-block mt-1 text-[14px] font-semibold px-2 py-0.5 rounded-lg ${v.badge}`}>{v.txt}</span>
-                                          );
-                                        })()}
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                          {(() => {
+                                            const v = aiVerdictFor(cand);
+                                            if (!v) return null;
+                                            return (
+                                              <span className={`inline-block text-[14px] font-semibold px-2 py-0.5 rounded-lg ${v.badge}`}>{v.txt}</span>
+                                            );
+                                          })()}
+                                          {decMeta && (
+                                            <span className={`inline-block text-[14px] font-semibold px-2 py-0.5 rounded-lg ${decMeta.tag}`}>{decMeta.short}</span>
+                                          )}
+                                        </div>
                                       </td>
                                     );
                                   }
@@ -5802,6 +6138,7 @@ export default function EmployerPanel() {
                 crmFilterRole={crmFilterRole}
                 setCrmFilterRole={setCrmFilterRole}
                 crmRoleOptions={crmRoleOptions}
+                crmVacancyOptions={crmVacancyOptions}
                 crmFilterStage={crmFilterStage}
                 setCrmFilterStage={setCrmFilterStage}
                 crmFilterDecision={crmFilterDecision}
@@ -5881,6 +6218,7 @@ export default function EmployerPanel() {
                 setCrmSort={setCrmSort}
                 crmCompanyOptions={crmCompanyOptions}
                 crmRoleOptions={crmRoleOptions}
+                crmVacancyOptions={crmVacancyOptions}
                 onResetCol={(k) => {
                   setTableColFilters((prev: any) => {
                     const copy = { ...prev };
@@ -6226,6 +6564,29 @@ export default function EmployerPanel() {
                               onOpenDetailed={() => handleTariffTabChange("vacancy")}
                               onUpdated={async () => { await Promise.all([fetchBillingState(), fetchData()]); }}
                             />
+
+                            {/* Vacancy responsibles block */}
+                            {(() => {
+                              const pAny: any = proj;
+                              const respList: string[] = Array.isArray(pAny.responsible_employer_ids) && pAny.responsible_employer_ids.length > 0
+                                ? pAny.responsible_employer_ids
+                                : pAny.responsible_employer_id || pAny.responsibleEmployerId || pAny.employer_id || pAny.employerId
+                                ? [String(pAny.responsible_employer_id || pAny.responsibleEmployerId || pAny.employer_id || pAny.employerId)]
+                                : employerId
+                                ? [String(employerId)]
+                                : [];
+                              const cachedTeam = projCompId ? companyTeamMembersCache[String(projCompId)] || [] : [];
+                              return (
+                                <VacancyResponsiblesBadge
+                                  variant="card"
+                                  responsibleIds={respList}
+                                  companyMembers={cachedTeam}
+                                  creatorName={profileName || compName}
+                                  creatorId={String(pAny.employer_id || pAny.employerId || employerId || "")}
+                                  onChangeClick={() => setResponsiblesModalTarget({ project: proj, mode: "card" })}
+                                />
+                              );
+                            })()}
 
                             {/* Interactive dynamic links of vacancy page */}
                             <div className="bg-transparent backdrop-blur-xl p-4 rounded-2xl border border-white/15 space-y-3">
@@ -6810,18 +7171,18 @@ export default function EmployerPanel() {
 
                                   {/* Live Preview Container — Standard & Proportional */}
                                   <div>
-                                    {siteItem.url && siteItem.url.trim().length > 3 ? (
-                                      <SitePreview
-                                        url={siteItem.url}
-                                        title={siteItem.title}
-                                        heightPx={160}
-                                        variant="banner"
-                                      />
-                                    ) : (
-                                      <div className="h-20 rounded-2xl border border-dashed border-white/15 flex items-center justify-center text-xs text-slate-400">
-                                        Введите URL для предпросмотра сайта
-                                      </div>
-                                    )}
+                                    <SiteEditorPreview
+                                      url={siteItem.url}
+                                      title={siteItem.title}
+                                      customScreenshot={siteItem.customScreenshot}
+                                      heightPx={siteItem.heightPx || 160}
+                                      uploaderName={profileName || profileEmail || googleEmail || (employerId ? `Работодатель #${employerId}` : "Работодатель")}
+                                      onScreenshotChange={(newShot) => {
+                                        setNewCompanySitesList((prev) =>
+                                          prev.map((it, i) => (i === sIdx ? { ...it, customScreenshot: newShot } : it))
+                                        );
+                                      }}
+                                    />
                                   </div>
                                 </div>
                               </div>
@@ -7855,7 +8216,7 @@ export default function EmployerPanel() {
                           </button>
                         </div>
                       </div>
-                      <OfferConsent checked={topupOfferOk} onChange={setTopupOfferOk} context="pay" />
+                      <LegalConsentBlock mode="employer" checked={topupOfferOk} onChange={setTopupOfferOk} context="pay" />
                       <p className="text-sm text-slate-300 leading-relaxed">
                         Оплата проводится через систему «Робокасса». Принимаем карты МИР, Visa, Mastercard и другие способы.
                         После успешной оплаты RR начисляются автоматически (обычно в течение минуты).
@@ -8022,6 +8383,12 @@ export default function EmployerPanel() {
                         );
                       })()}
                     </div>
+                  </div>
+
+                  {/* Юридические документы платёжного раздела */}
+                  <div className="bg-transparent backdrop-blur-2xl border border-white/20 rounded-3xl p-5 shadow-xl space-y-2">
+                    <div className="text-sm font-bold text-[#E7C768]">Правовая информация об оплате и обработке данных</div>
+                    <LegalConsentBlock mode="employer" linksOnly />
                   </div>
                 </TabsContent>
 
@@ -8628,7 +8995,7 @@ export default function EmployerPanel() {
                             (e.currentTarget as HTMLImageElement).src = rrImg("/files/13/rr2.png");
                           }}
                         />
-                        <div className="flex flex-wrap items-center justify-center gap-3 w-full">
+                        <div className="flex flex-wrap items-center justify-center gap-2.5 w-full">
                           <button
                             type="button"
                             onClick={() => {
@@ -8640,6 +9007,7 @@ export default function EmployerPanel() {
                               setTempTelegramGroupIds(telegramGroupIds);
                               setTempTelegramChannelIds(telegramChannelIds);
                               setTempTelegramNotifyEvents({ ...telegramNotifyEvents });
+                              setTelegramModalValidationMsg("");
                               setNewPassword("");
                               setConfirmPassword("");
                               setPasswordChangeError("");
@@ -8647,10 +9015,35 @@ export default function EmployerPanel() {
                               setEditModalTab("profile");
                               setIsEditProfileModalOpen(true);
                             }}
-                            className="bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] font-bold text-[14px] px-6 py-2.5 rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer hover:brightness-110 active:scale-95"
+                            className="bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] font-bold text-[14px] px-5 py-2.5 min-h-[44px] rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer hover:brightness-110 active:scale-95"
                           >
                             <Edit className="w-4 h-4 text-[#17344F]" />
                             <span>Редактировать</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTempProfileName(profileName);
+                              setTempProfileEmail(profileEmail);
+                              setTempProfilePhone(profilePhone);
+                              setTempTelegramUsername(telegramUsernameState);
+                              setTempTelegramChatId(telegramChatId);
+                              setTempTelegramGroupIds(telegramGroupIds);
+                              setTempTelegramChannelIds(telegramChannelIds);
+                              setTempTelegramNotifyEvents({ ...telegramNotifyEvents });
+                              setTelegramModalValidationMsg("");
+                              setNewPassword("");
+                              setConfirmPassword("");
+                              setPasswordChangeError("");
+                              setPasswordChangeSuccess("");
+                              setEditModalTab("telegram");
+                              setIsEditProfileModalOpen(true);
+                            }}
+                            className="bg-transparent border border-white/25 hover:bg-white/10 text-white font-semibold text-[14px] px-4 py-2.5 min-h-[44px] rounded-xl transition-all flex items-center gap-2 cursor-pointer"
+                          >
+                            <Smartphone className="w-4 h-4 text-[#E7C768]" />
+                            <span>Уведомления и PWA</span>
                           </button>
                         </div>
                       </div>
@@ -8721,75 +9114,80 @@ export default function EmployerPanel() {
                       </div>
                     </div>
 
-                    {/* Modal: Edit Profile with merged Password Change in Apple Liquid Glass style (Centered in Viewport via Portal) */}
+                    {/* Modal: Edit Profile with merged Notifications, PWA & Password Change in Apple Liquid Glass style */}
                     {isEditProfileModalOpen && typeof document !== "undefined" && createPortal(
-                      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto">
-                        {/* Completely transparent backdrop (no darkening, no blur on background) */}
+                      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto bg-transparent">
                         <div
                           className="fixed inset-0 bg-transparent transition-opacity"
                           onClick={() => setIsEditProfileModalOpen(false)}
                         />
-                        {/* Container with standard blue background (#17344F) and Apple Liquid Glass styling */}
-                        <div className="relative z-10 w-full max-w-xl bg-[#17344F] border border-white/20 rounded-3xl p-5 sm:p-7 space-y-4 shadow-2xl text-left my-auto text-white backdrop-blur-xl">
-                          <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                            <h3 className="text-base font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent flex items-center gap-2">
-                              <Edit className="w-5 h-5 text-[#E7C768]" /> Редактирование профиля
+                        <div className="relative z-10 w-full max-w-2xl bg-transparent border border-white/25 rounded-3xl p-5 sm:p-7 space-y-4 shadow-2xl text-left my-auto text-white backdrop-blur-2xl">
+                          <div className="flex items-center justify-between border-b border-white/15 pb-3">
+                            <h3 className="text-base sm:text-lg font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent flex items-center gap-2">
+                              <Edit className="w-5 h-5 text-[#E7C768]" /> Редактирование профиля и уведомлений
                             </h3>
                             <button
                               type="button"
                               onClick={() => setIsEditProfileModalOpen(false)}
-                              className="text-slate-300 hover:text-white p-1.5 rounded-xl hover:bg-white/10 transition cursor-pointer"
+                              className="text-slate-300 hover:text-white p-2 rounded-xl hover:bg-white/10 transition cursor-pointer"
                             >
                               <X className="w-5 h-5" />
                             </button>
                           </div>
 
-                          {/* Modal Section Switches */}
-                          <div className="flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
+                          {/* Modal Section Switches (vertical stack on mobile, flex-wrap on desktop — no horizontal overflow) */}
+                          <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-stretch sm:items-center gap-2 border-b border-white/15 pb-3">
                             <button
                               type="button"
                               onClick={() => setEditModalTab("profile")}
-                              className={`px-4 py-2 rounded-xl text-[14px] font-bold transition flex items-center gap-2 cursor-pointer ${
+                              className={`px-4 py-2.5 min-h-[44px] rounded-xl text-[14px] font-bold transition flex items-center justify-center sm:justify-start gap-2 cursor-pointer ${
                                 editModalTab === "profile"
                                   ? "bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] shadow"
-                                  : "bg-transparent border border-white/20 text-slate-200 hover:bg-white/5"
+                                  : "bg-transparent border border-white/25 text-white hover:bg-white/10"
                               }`}
                             >
-                              <User className="w-4 h-4" />
+                              <User className="w-4 h-4 shrink-0" />
                               <span>Личные данные</span>
                             </button>
 
                             <button
                               type="button"
                               onClick={() => setEditModalTab("telegram")}
-                              className={`px-4 py-2 rounded-xl text-[14px] font-bold transition flex items-center gap-2 cursor-pointer ${
+                              className={`px-4 py-2.5 min-h-[44px] rounded-xl text-[14px] font-bold transition flex items-center justify-center sm:justify-start gap-2 cursor-pointer ${
                                 editModalTab === "telegram"
                                   ? "bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] shadow"
-                                  : "bg-transparent border border-white/20 text-slate-200 hover:bg-white/5"
+                                  : "bg-transparent border border-white/25 text-white hover:bg-white/10"
                               }`}
                             >
-                              <Send className="w-4 h-4" />
-                              <span>Telegram-уведомления</span>
-                              {tempTelegramChatId || tempTelegramUsername ? (
-                                <span className="w-2 h-2 rounded-full bg-[#E7C768] inline-block"></span>
-                              ) : null}
+                              <Send className="w-4 h-4 shrink-0" />
+                              <span>Уведомления (TG · Push)</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setEditModalTab("pwa")}
+                              className={`px-4 py-2.5 min-h-[44px] rounded-xl text-[14px] font-bold transition flex items-center justify-center sm:justify-start gap-2 cursor-pointer ${
+                                editModalTab === "pwa"
+                                  ? "bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] shadow"
+                                  : "bg-transparent border border-white/25 text-white hover:bg-white/10"
+                              }`}
+                            >
+                              <Smartphone className="w-4 h-4 shrink-0" />
+                              <span>Приложение на телефон</span>
                             </button>
 
                             {authProvider !== "google" && (
                               <button
                                 type="button"
                                 onClick={() => setEditModalTab("password")}
-                                className={`px-4 py-2 rounded-xl text-[14px] font-bold transition flex items-center gap-2 cursor-pointer ${
+                                className={`px-4 py-2.5 min-h-[44px] rounded-xl text-[14px] font-bold transition flex items-center justify-center sm:justify-start gap-2 cursor-pointer ${
                                   editModalTab === "password"
                                     ? "bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] shadow"
-                                    : "bg-transparent border border-white/20 text-slate-200 hover:bg-white/5"
+                                    : "bg-transparent border border-white/25 text-white hover:bg-white/10"
                                 }`}
                               >
-                                <Lock className="w-4 h-4" />
+                                <Lock className="w-4 h-4 shrink-0" />
                                 <span>Смена пароля</span>
-                                {newPassword ? (
-                                  <span className="w-2 h-2 rounded-full bg-[#E7C768] inline-block"></span>
-                                ) : null}
                               </button>
                             )}
                           </div>
@@ -8832,10 +9230,10 @@ export default function EmployerPanel() {
                           )}
 
                           {editModalTab === "telegram" && (
-                            <div className="space-y-4 text-sm max-h-[60vh] overflow-y-auto pr-1">
+                            <div className="space-y-4 text-[14px] max-h-[62vh] overflow-y-auto pr-1">
                               <div>
                                 <label className="block text-[14px] text-slate-200 font-bold mb-1.5">Telegram (@username для связи с соискателями)</label>
-                                <div className="flex items-center w-full bg-white/5 border border-white/20 rounded-xl overflow-hidden focus-within:border-white/40 transition-colors">
+                                <div className="flex items-center w-full bg-transparent border border-white/20 rounded-xl overflow-hidden focus-within:border-[#E7C768] transition-colors">
                                   <div className="flex items-center justify-center pl-3.5 pr-2 py-2.5 text-white font-mono text-[14px] select-none shrink-0 border-0 bg-transparent">
                                     @
                                   </div>
@@ -8849,135 +9247,60 @@ export default function EmployerPanel() {
                                 </div>
                               </div>
 
-                              <div className="bg-transparent border border-white/20 rounded-2xl p-4 text-[14px] text-white leading-relaxed space-y-2.5 backdrop-blur-md">
-                                <div className="font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent text-[14px]">Подключение Telegram-бота для оповещений:</div>
-                                <ol className="list-decimal list-inside space-y-1 text-slate-200 text-[14px]">
-                                  <li>Откройте бота <a href="https://t.me/RoboRecrutBot" target="_blank" rel="noreferrer" className="underline bg-gradient-to-r from-[#F4EE8E] to-[#E7C768] bg-clip-text text-transparent font-mono font-bold">@RoboRecrutBot</a> и нажмите <b>Start</b>.</li>
-                                  <li>В меню бота нажмите кнопку <b>🆕</b> — бот пришлёт ваш числовой Telegram ID.</li>
-                                  <li>Для групповых чатов добавьте бота в группу и отправьте команду <b>/id</b>.</li>
-                                </ol>
-                                <a
-                                  href="https://t.me/RoboRecrutBot"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-2 mt-1 px-4 py-2 rounded-xl bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] font-bold text-[14px] hover:brightness-110 transition shadow-sm"
-                                >
-                                  Открыть @RoboRecrutBot →
-                                </a>
-                              </div>
-
-                              {/* Personal Telegram Chat IDs */}
-                              <div>
-                                <label className="block text-[14px] text-slate-200 font-bold mb-1.5">ID личных чатов Telegram (личка):</label>
-                                <input
-                                  type="text"
-                                  value={tempTelegramChatId}
-                                  onChange={(e) => setTempTelegramChatId(e.target.value)}
-                                  placeholder="например: 123456789, 987654321 (через запятую)"
-                                  className="w-full bg-white/5 border border-white/20 rounded-xl px-3.5 py-2.5 text-[14px] text-white font-mono placeholder-slate-400 focus:outline-none focus:border-[#E7C768] transition-colors"
-                                />
-                                <p className="text-xs text-slate-300 mt-1">
-                                  Сюда бот будет присылать персональные уведомления руководителю или HR-специалисту.
-                                </p>
-                              </div>
-
-                              {/* Group Chat IDs */}
-                              <div>
-                                <label className="block text-[14px] text-slate-200 font-bold mb-1.5">ID групповых чатов (для команд и отделов):</label>
-                                <input
-                                  type="text"
-                                  value={tempTelegramGroupIds}
-                                  onChange={(e) => setTempTelegramGroupIds(e.target.value)}
-                                  placeholder="например: -1001234567890, -1009876543210 (через запятую)"
-                                  className="w-full bg-white/5 border border-white/20 rounded-xl px-3.5 py-2.5 text-[14px] text-white font-mono placeholder-slate-400 focus:outline-none focus:border-[#E7C768] transition-colors"
-                                />
-                                <p className="text-xs text-slate-300 mt-1">
-                                  Для рабочих групп отдела найма. Бот должен быть добавлен в группу.
-                                </p>
-                              </div>
-
-                              {/* Public Channel IDs */}
-                              <div>
-                                <label className="block text-[14px] text-slate-200 font-bold mb-1.5">Публичные каналы / группы (username или ссылки):</label>
-                                <input
-                                  type="text"
-                                  value={tempTelegramChannelIds}
-                                  onChange={(e) => setTempTelegramChannelIds(e.target.value)}
-                                  placeholder="например: @company_vacancies, https://t.me/hr_announcements"
-                                  className="w-full bg-white/5 border border-white/20 rounded-xl px-3.5 py-2.5 text-[14px] text-white font-mono placeholder-slate-400 focus:outline-none focus:border-[#E7C768] transition-colors"
-                                />
-                                <p className="text-xs text-slate-300 mt-1">
-                                  Для публикации анонсов и вакансий. Бот должен быть администратором канала.
-                                </p>
-                              </div>
-
-                              {/* Event Notifications Matrix */}
-                              <div className="bg-transparent border border-white/15 rounded-2xl p-4 space-y-3">
-                                <div className="text-[14px] font-bold text-[#E7C768]">
-                                  Какие оповещения отправлять в Telegram:
+                              {telegramModalValidationMsg && (
+                                <div className="bg-transparent border border-[#E7C768] rounded-2xl px-4 py-3 text-[14px] text-[#F4EE8E] backdrop-blur-md">
+                                  {telegramModalValidationMsg}
                                 </div>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[14px]">
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.new_candidate}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, new_candidate: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Новые отклики соискателей</span>
-                                  </label>
+                              )}
 
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.interview_passed}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, interview_passed: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Завершение интервью и баллы</span>
-                                  </label>
+                              <TelegramTargetsEditor
+                                personalIds={tempTelegramChatId}
+                                onPersonalIdsChange={(val) => {
+                                  setTempTelegramChatId(val);
+                                  if (telegramModalValidationMsg) setTelegramModalValidationMsg("");
+                                }}
+                                groupIds={tempTelegramGroupIds}
+                                onGroupIdsChange={(val) => {
+                                  setTempTelegramGroupIds(val);
+                                  if (telegramModalValidationMsg) setTelegramModalValidationMsg("");
+                                }}
+                                channelIds={tempTelegramChannelIds}
+                                onChannelIdsChange={(val) => {
+                                  setTempTelegramChannelIds(val);
+                                  if (telegramModalValidationMsg) setTelegramModalValidationMsg("");
+                                }}
+                              />
 
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.test_passed}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, test_passed: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Сдача аттестаций и тестов</span>
-                                  </label>
-
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.training_progress}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, training_progress: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Прохождение этапов обучения</span>
-                                  </label>
-
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.balance_change}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, balance_change: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Изменения баланса и лимитов</span>
-                                  </label>
-
-                                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={tempTelegramNotifyEvents.daily_digest}
-                                      onChange={(e) => setTempTelegramNotifyEvents({ ...tempTelegramNotifyEvents, daily_digest: e.target.checked })}
-                                      className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                                    />
-                                    <span>Ежедневный дайджест активности</span>
-                                  </label>
-                                </div>
+                              {/* Full 3-Channel Notification Settings & Per-Event Checkboxes */}
+                              <div className="pt-2 border-t border-white/15">
+                                <NotificationSettingsPanel
+                                  role="employer"
+                                  employerId={employerId}
+                                  embedded={true}
+                                  onConfigSynced={(cfg) => {
+                                    const nextEv = {
+                                      new_candidate: cfg.event_channels?.new_candidate?.telegram ?? cfg.events?.new_candidate ?? true,
+                                      interview_stages: cfg.event_channels?.interview_stages?.telegram ?? cfg.events?.interview_stages ?? true,
+                                      interview_reject: cfg.event_channels?.interview_reject?.telegram ?? cfg.events?.interview_reject ?? true,
+                                      interview_success: cfg.event_channels?.interview_success?.telegram ?? cfg.events?.interview_success ?? true,
+                                      training_progress: cfg.event_channels?.training_progress?.telegram ?? cfg.events?.training_progress ?? true,
+                                      certificate_ready: cfg.event_channels?.certificate_ready?.telegram ?? cfg.events?.certificate_ready ?? true,
+                                      balance_change: cfg.event_channels?.balance_change?.telegram ?? cfg.events?.balance_change ?? true,
+                                      low_balance_rr: cfg.event_channels?.low_balance_rr?.telegram ?? cfg.events?.low_balance_rr ?? true,
+                                      low_general_limits: cfg.event_channels?.low_general_limits?.telegram ?? cfg.events?.low_general_limits ?? true,
+                                      low_vacancy_limits: cfg.event_channels?.low_vacancy_limits?.telegram ?? cfg.events?.low_vacancy_limits ?? true,
+                                    };
+                                    setTempTelegramNotifyEvents(nextEv);
+                                    setTelegramNotifyEvents(nextEv);
+                                  }}
+                                />
                               </div>
+                            </div>
+                          )}
+
+                          {editModalTab === "pwa" && (
+                            <div className="space-y-4 text-[14px]">
+                              <PWAInstallCard role="employer" employerId={employerId} />
                             </div>
                           )}
 
@@ -9073,11 +9396,25 @@ export default function EmployerPanel() {
                                   }
                                 }
 
-                                const cleanTg = tempTelegramUsername.replace(/^@+/, "").trim();
-                                const cleanChatId = tempTelegramChatId.trim();
-                                const cleanGroupIds = tempTelegramGroupIds.trim();
-                                const cleanChannelIds = tempTelegramChannelIds.trim();
+                                const validation = validateTelegramTargetsInput(
+                                  tempTelegramChatId,
+                                  tempTelegramGroupIds,
+                                  tempTelegramChannelIds
+                                );
+                                if (validation.hasErrors) {
+                                  setEditModalTab("telegram");
+                                  setTelegramModalValidationMsg(
+                                    "Проверьте корректность указанных Telegram ID — подсказки выделены ниже."
+                                  );
+                                  return;
+                                }
 
+                                const cleanTg = tempTelegramUsername.replace(/^@+/, "").trim();
+                                const cleanChatId = normalizeTargetsCommaList(tempTelegramChatId);
+                                const cleanGroupIds = normalizeTargetsCommaList(tempTelegramGroupIds);
+                                const cleanChannelIds = normalizeTargetsCommaList(tempTelegramChannelIds);
+
+                                setTelegramModalValidationMsg("");
                                 setProfileName(tempProfileName);
                                 setProfileEmail(tempProfileEmail);
                                 setProfilePhone(tempProfilePhone);
@@ -9101,6 +9438,7 @@ export default function EmployerPanel() {
                                     events: tempTelegramNotifyEvents,
                                   },
                                 });
+                                window.dispatchEvent(new CustomEvent("notifications-refresh"));
                                 setIsEditProfileModalOpen(false);
                               }}
                               className="bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] font-bold text-[14px] px-5 py-2.5 rounded-xl hover:brightness-110 active:scale-95 transition-all shadow-md flex items-center gap-2 cursor-pointer"
@@ -9415,6 +9753,28 @@ export default function EmployerPanel() {
       <CandidateDetailsModal
         candidateId={selectedCandidateId}
         onClose={() => setSelectedCandidateId(null)}
+        onDecisionChange={(cid, decision, msg) => {
+          setCandidates((prev) =>
+            prev.map((c: any) => {
+              const match =
+                String(c.uuid || "") === String(cid) ||
+                String(c.id || "") === String(cid) ||
+                String(c.publicId || "") === String(cid);
+              if (!match) return c;
+              return {
+                ...c,
+                hireDecision: decision,
+                hireMessage: msg || "",
+                hireDecidedAt: new Date().toISOString(),
+              };
+            })
+          );
+          setHireDecisionMap((prev) => ({
+            ...prev,
+            [cid]: decision,
+          }));
+          void fetchData();
+        }}
       />
 
       {/* Spend-confirm dialog: charges for landing / interview / training
@@ -9474,10 +9834,11 @@ export default function EmployerPanel() {
             <p className="text-sm text-slate-200 leading-relaxed">
               Вы активируете тариф <strong className="text-white bg-transparent px-2 py-0.5 rounded border border-[#E7C768]/40">{selectedPlanToBuy === "silver" ? "Серебро Про" : "Золото Безлимит"}</strong>. Оплата производится через безопасный шлюз.
             </p>
+            <LegalConsentBlock mode="employer" checked={planLegalOk} onChange={setPlanLegalOk} context="pay" />
             <button
               onClick={handleConfirmPayment}
-              disabled={isProcessingPayment}
-              className="w-full bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] hover:brightness-110 active:scale-95 text-[#17344F] font-bold text-sm py-3.5 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+              disabled={isProcessingPayment || !planLegalOk}
+              className="w-full bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] hover:brightness-110 active:scale-95 disabled:opacity-40 text-[#17344F] font-bold text-sm py-3.5 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
             >
               {isProcessingPayment ? (
                 <span className="flex items-center justify-center gap-1">
@@ -9658,6 +10019,48 @@ export default function EmployerPanel() {
                     })()}
                   </div>
                 </div>
+
+                {/* Responsible managers from company team (multi-select modal) */}
+                {(() => {
+                  const ep: any = editingProject;
+                  const respList: string[] =
+                    Array.isArray(ep.responsible_employer_ids) && ep.responsible_employer_ids.length > 0
+                      ? ep.responsible_employer_ids
+                      : Array.isArray(ep.responsibleEmployerIds) && ep.responsibleEmployerIds.length > 0
+                      ? ep.responsibleEmployerIds
+                      : ep.responsible_employer_id || ep.responsibleEmployerId || ep.employer_id || ep.employerId || employerId
+                      ? [
+                          String(
+                            ep.responsible_employer_id ||
+                              ep.responsibleEmployerId ||
+                              ep.employer_id ||
+                              ep.employerId ||
+                              employerId
+                          ),
+                        ]
+                      : [];
+                  const combinedMembers: ResponsiblePreviewPerson[] = [
+                    ...editingCompanyTeam.map((m) => ({
+                      id: m.id,
+                      public_id: m.public_id,
+                      name: m.name,
+                      email: m.email,
+                      roleLabel: m.roleLabel,
+                    })),
+                    ...((editingCompanyIdForTeam && companyTeamMembersCache[editingCompanyIdForTeam]) || []),
+                  ];
+                  return (
+                    <VacancyResponsiblesBadge
+                      variant="editor"
+                      responsibleIds={respList}
+                      companyMembers={combinedMembers}
+                      creatorName={profileName || "Создатель вакансии"}
+                      creatorId={String(ep.employer_id || ep.employerId || employerId || "")}
+                      onChangeClick={() => setResponsiblesModalTarget({ project: editingProject, mode: "editor" })}
+                    />
+                  );
+                })()}
+
                 <div className="bg-white/5 p-3 rounded-2xl border border-white/10 space-y-2">
                   <input
                     type="text"
@@ -9863,9 +10266,11 @@ export default function EmployerPanel() {
                   telegram_user_ids: "",
                   events: {
                     new_candidate: true,
-                    interview_passed: true,
-                    test_passed: true,
+                    interview_stages: true,
+                    interview_reject: true,
+                    interview_success: true,
                     training_progress: true,
+                    certificate_ready: true,
                   },
                 };
                 if (typeof rawNotif === "string") {
@@ -9882,6 +10287,15 @@ export default function EmployerPanel() {
                     notificationsConfig: updated,
                   } as any);
                 };
+
+                const evList = [
+                  { key: "new_candidate", label: "Новые отклики соискателей" },
+                  { key: "interview_stages", label: "Этапы Интервью (резюме, чек-лист, ситуации)" },
+                  { key: "interview_reject", label: "Интервью Отказ", legacyKey: "interview_passed" },
+                  { key: "interview_success", label: "Интервью Успех", legacyKey: "interview_passed" },
+                  { key: "training_progress", label: "Прохождение этапов обучения" },
+                  { key: "certificate_ready", label: "Сертификат Готов", legacyKey: "test_passed" },
+                ];
 
                 return (
                   <div className="bg-transparent border border-white/20 rounded-2xl p-4 sm:p-5 space-y-4">
@@ -9942,58 +10356,29 @@ export default function EmployerPanel() {
                             События по вакансии для отправки:
                           </span>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[14px]">
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={notifObj.events?.new_candidate ?? true}
-                                onChange={(e) =>
-                                  updateVacancyNotif({
-                                    events: { ...(notifObj.events || {}), new_candidate: e.target.checked },
-                                  })
-                                }
-                                className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                              />
-                              <span>Новые отклики соискателей</span>
-                            </label>
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={notifObj.events?.interview_passed ?? true}
-                                onChange={(e) =>
-                                  updateVacancyNotif({
-                                    events: { ...(notifObj.events || {}), interview_passed: e.target.checked },
-                                  })
-                                }
-                                className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                              />
-                              <span>Завершение интервью и баллы</span>
-                            </label>
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={notifObj.events?.test_passed ?? true}
-                                onChange={(e) =>
-                                  updateVacancyNotif({
-                                    events: { ...(notifObj.events || {}), test_passed: e.target.checked },
-                                  })
-                                }
-                                className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                              />
-                              <span>Сдача тестов и аттестаций</span>
-                            </label>
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={notifObj.events?.training_progress ?? true}
-                                onChange={(e) =>
-                                  updateVacancyNotif({
-                                    events: { ...(notifObj.events || {}), training_progress: e.target.checked },
-                                  })
-                                }
-                                className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
-                              />
-                              <span>Прохождение обучения</span>
-                            </label>
+                            {evList.map((ev) => {
+                              const checkedVal =
+                                notifObj.events?.[ev.key] !== undefined
+                                  ? Boolean(notifObj.events[ev.key])
+                                  : ev.legacyKey && notifObj.events?.[ev.legacyKey] !== undefined
+                                  ? Boolean(notifObj.events[ev.legacyKey])
+                                  : true;
+                              return (
+                                <label key={ev.key} className="flex items-center gap-2 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={checkedVal}
+                                    onChange={(e) =>
+                                      updateVacancyNotif({
+                                        events: { ...(notifObj.events || {}), [ev.key]: e.target.checked },
+                                      })
+                                    }
+                                    className="w-4 h-4 rounded border-white/30 text-[#E7C768] focus:ring-0 cursor-pointer"
+                                  />
+                                  <span>{ev.label}</span>
+                                </label>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
@@ -10421,7 +10806,96 @@ export default function EmployerPanel() {
         }}
         addAuditEvent={addAuditEvent}
       />
-      
+
+      {/* Multi-select Vacancy Responsibles Modal */}
+      {responsiblesModalTarget && (() => {
+        const tp: any = responsiblesModalTarget.project;
+        const targetCompId = String(
+          tp?.company_id ||
+            tp?.companyId ||
+            companiesList.find((c) => c.name?.toLowerCase() === (tp?.companyName || "").toLowerCase())?.id ||
+            ""
+        ).trim();
+        const initialList: string[] =
+          Array.isArray(tp?.responsible_employer_ids) && tp.responsible_employer_ids.length > 0
+            ? tp.responsible_employer_ids
+            : Array.isArray(tp?.responsibleEmployerIds) && tp.responsibleEmployerIds.length > 0
+            ? tp.responsibleEmployerIds
+            : tp?.responsible_employer_id || tp?.responsibleEmployerId || tp?.employer_id || tp?.employerId || employerId
+            ? [String(tp?.responsible_employer_id || tp?.responsibleEmployerId || tp?.employer_id || tp?.employerId || employerId)]
+            : [];
+        return (
+          <VacancyResponsiblesModal
+            open={true}
+            onClose={() => setResponsiblesModalTarget(null)}
+            projectId={String(tp?.id || "")}
+            vacancyTitle={String(tp?.roleName || tp?.role_name || "")}
+            companyId={targetCompId || undefined}
+            companyName={String(tp?.companyName || tp?.company_name || "")}
+            creatorEmployerId={String(tp?.employer_id || tp?.employerId || employerId || "")}
+            creatorProfileFallback={
+              employerId
+                ? {
+                    id: String(employerId),
+                    public_id: String(employerId),
+                    name: profileName,
+                    email: profileEmail,
+                    phone: profilePhone,
+                    telegram: telegramUsernameState,
+                  }
+                : undefined
+            }
+            initialSelectedIds={initialList}
+            persistDirectly={responsiblesModalTarget.mode === "card"}
+            onSaved={(nextIds, contacts) => {
+              const primary = nextIds[0] || "";
+              setProjects((prev) =>
+                prev.map((p) =>
+                  p.id === tp.id
+                    ? ({
+                        ...p,
+                        responsible_employer_id: primary,
+                        responsibleEmployerId: primary,
+                        responsible_employer_ids: nextIds,
+                        responsibleEmployerIds: nextIds,
+                      } as any)
+                    : p
+                )
+              );
+              if (editingProject && editingProject.id === tp.id) {
+                setEditingProject((prev) =>
+                  prev
+                    ? ({
+                        ...prev,
+                        responsible_employer_id: primary,
+                        responsibleEmployerId: primary,
+                        responsible_employer_ids: nextIds,
+                        responsibleEmployerIds: nextIds,
+                      } as any)
+                    : prev
+                );
+              }
+              if (targetCompId && contacts.length > 0) {
+                setCompanyTeamMembersCache((prev) => {
+                  const existing = prev[targetCompId] || [];
+                  const merged = [...existing];
+                  for (const c of contacts) {
+                    const key = String(c.public_id || c.id).replace(/^emp-?/i, "");
+                    if (!merged.some((e) => String(e.public_id || e.id).replace(/^emp-?/i, "") === key)) {
+                      merged.push(c);
+                    }
+                  }
+                  return { ...prev, [targetCompId]: merged };
+                });
+              }
+              if (responsiblesModalTarget.mode === "card") {
+                addAuditEvent("success", "Ответственные обновлены", `Назначено ответственных: ${nextIds.length}`);
+              }
+            }}
+          />
+        );
+      })()}
+
     </div>
   );
 }

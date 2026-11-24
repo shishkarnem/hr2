@@ -103,7 +103,7 @@ export interface LandingThemeConfig {
 
   showSphereAnimation?: boolean;
   showWaveAnimation?: boolean;
-  sitePreviewHeight?: number; // Height in px for website previews (0 = hidden)
+  sitePreviewHeight?: number | null; // Height in px for website previews (0 = hidden, null = auto)
   siteDisplayMode?: "preview" | "buttons"; // Preview card vs simple action button
   sitePreviewFilterColor?: string; // Filter overlay for site preview cards
   sitePreviewFilterOpacity?: number; // 0 - 100
@@ -990,6 +990,10 @@ export function buildThemeCss(parsedTheme: LandingThemeConfig): string {
 #company-landing-root .team-member-card,
 #company-landing-root .team-avatar-box,
 #company-landing-root .vacancy-hero-banner .site-preview-banner,
+#company-landing-root .site-preview-banner,
+#company-landing-root .site-preview-card,
+.site-preview-banner,
+.site-preview-card,
 .product-card,
 .about-card,
 .landing-ai-dialog,
@@ -1006,6 +1010,21 @@ export function buildThemeCss(parsedTheme: LandingThemeConfig): string {
   border-color: ${containerBorderColorRgba} !important;
   border-width: ${parsedTheme.containerBorderWidth ?? 1}px !important;
   border-radius: var(--landing-radius-container) !important;
+}
+
+#company-landing-root .site-preview-footer,
+.site-preview-footer {
+  border-top-color: ${containerBorderColorRgba} !important;
+}
+
+#company-landing-root .site-preview-title,
+.site-preview-title {
+  ${headingsColorRule}
+}
+
+#company-landing-root .site-preview-host,
+.site-preview-host {
+  color: var(--landing-text-color) !important;
 }
 
 /* AI Assistant dialog, message bubbles, inline buttons, input field connected to containerBorderRadius */
@@ -1266,7 +1285,8 @@ ${(() => {
   const isLogoMono = isMasterMonochrome || parsedTheme.logoMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
   const isHeroBgMono = isMasterMonochrome || parsedTheme.heroBgMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
   const isPageBgMono = isMasterMonochrome || parsedTheme.pageBgMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
-  const isPreviewMono = isMasterMonochrome || parsedTheme.sitePreviewMonochrome === true || parsedTheme.siteScreenshotMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
+  const isWebPreviewMono = isMasterMonochrome || parsedTheme.sitePreviewMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
+  const isCustomShotMono = isMasterMonochrome || parsedTheme.siteScreenshotMonochrome === true || (parsedTheme.allMediaMonochrome === undefined && parsedTheme.pageBgColor === "#000000" && parsedTheme.headingsColorMode === "solid");
 
   let rules = "";
 
@@ -1337,13 +1357,21 @@ img.landing-logo-nofilter,
 `;
   }
 
-  if (isPreviewMono) {
+  if (isWebPreviewMono) {
     rules += `
-#company-landing-root .site-preview-banner img,
-#company-landing-root .site-preview-card img,
-#company-landing-root .site-preview-img,
+#company-landing-root .site-preview-banner img.site-preview-img:not(.site-screenshot-img),
+#company-landing-root .site-preview-card img.site-preview-img:not(.site-screenshot-img),
+#company-landing-root .site-preview-img:not(.site-screenshot-img),
+.site-preview-img:not(.site-screenshot-img) {
+  filter: grayscale(100%) contrast(1.08) !important;
+}
+`;
+  }
+
+  if (isCustomShotMono) {
+    rules += `
 #company-landing-root .site-screenshot-img,
-.site-preview-img {
+.site-screenshot-img {
   filter: grayscale(100%) contrast(1.08) !important;
 }
 `;
@@ -1668,7 +1696,7 @@ export default function LandingStyleEditor({ company, onUpdateTheme, onSaved, is
 
     showSphereAnimation: initialTheme.showSphereAnimation ?? false,
     showWaveAnimation: initialTheme.showWaveAnimation !== false,
-    sitePreviewHeight: initialTheme.sitePreviewHeight ?? 180,
+    sitePreviewHeight: initialTheme.sitePreviewHeight !== undefined ? initialTheme.sitePreviewHeight : 180,
     siteDisplayMode: initialTheme.siteDisplayMode || "preview",
     sitePreviewFilterColor: initialTheme.sitePreviewFilterColor || "#17344F",
     sitePreviewFilterOpacity: initialTheme.sitePreviewFilterOpacity ?? 0,
@@ -3418,26 +3446,32 @@ export default function LandingStyleEditor({ company, onUpdateTheme, onSaved, is
                             <div className="grid grid-cols-4 sm:grid-cols-7 gap-1">
                               {[
                                 { val: 0, label: "0px" },
-                                { val: undefined, label: "Авто" },
+                                { val: null, label: "Авто" },
                                 { val: 160, label: "160" },
                                 { val: 240, label: "240" },
                                 { val: 360, label: "360" },
                                 { val: 540, label: "540" },
                                 { val: 720, label: "720" },
-                              ].map((opt) => (
-                                <button
-                                  key={String(opt.val)}
-                                  type="button"
-                                  onClick={() => setTheme((p) => ({ ...p, sitePreviewHeight: opt.val }))}
-                                  className={`py-1 px-1.5 rounded-lg border text-center text-[11px] font-semibold transition ${
-                                    theme.sitePreviewHeight === opt.val
-                                      ? "border-[#E7C768] text-[#E7C768] bg-white/10"
-                                      : "border-white/10 text-slate-300"
-                                  }`}
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
+                              ].map((opt) => {
+                                const isActive =
+                                  opt.val === null
+                                    ? theme.sitePreviewHeight === null || theme.sitePreviewHeight === undefined
+                                    : theme.sitePreviewHeight === opt.val;
+                                return (
+                                  <button
+                                    key={String(opt.val ?? "auto")}
+                                    type="button"
+                                    onClick={() => setTheme((p) => ({ ...p, sitePreviewHeight: opt.val as any }))}
+                                    className={`py-1 px-1.5 rounded-lg border text-center text-sm font-semibold transition ${
+                                      isActive
+                                        ? "border-[#E7C768] text-[#E7C768] bg-white/10"
+                                        : "border-white/10 text-slate-300"
+                                    }`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         )}

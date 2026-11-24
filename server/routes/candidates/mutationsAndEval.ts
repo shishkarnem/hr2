@@ -129,6 +129,35 @@ mutationsAndEvalRouter.post("/candidates", async (req: Request, res: Response) =
       `🔔 Новый кандидат зарегистрирован в системе!\n👤 Имя: ${candidateFullName}\n💼 Должность: ${targetRoleName}\n🔗 Этап: Ознакомление с условиями`
     );
 
+    try {
+      const { dispatchVacancyBellAndPushToResponsibles } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const { primaryLink } = await dispatchVacancyBellAndPushToResponsibles(db, {
+        projectId: targetProjectId,
+        projRow: projRow,
+        eventKey: "new_candidate",
+        kind: "new_candidate",
+        title: `Новый отклик: ${candidateFullName}`,
+        body: `Вакансия «${targetRoleName}». Новый кандидат в системе.`,
+        linkBuilder: (pub) => `/emp${pub}/crm?candidate=${encodeURIComponent(String(nextPubId))}`,
+        meta: { candidate_id: String(nextPubId), project_id: targetProjectId },
+      });
+      if (targetProjectId) {
+        const { sendVacancyTelegramNotification } = await import("../../services/telegram");
+        await sendVacancyTelegramNotification(
+          db,
+          String(targetProjectId),
+          `🔔 <b>Новый кандидат!</b>\n👤 ${candidateFullName}\n💼 Вакансия: ${targetRoleName}`,
+          {
+            eventKey: "new_candidate",
+            dedupKey: `new_cand_${nextPubId}`,
+            button: { text: "👤 Открыть кандидата в CRM", url: primaryLink },
+          }
+        );
+      }
+    } catch {}
+
     return res.status(201).json(newCand);
   } catch (err: any) {
     console.error("[POST /candidates error]:", err);
@@ -190,6 +219,103 @@ mutationsAndEvalRouter.patch("/candidates/:id", async (req: Request, res: Respon
   }
 });
 
+mutationsAndEvalRouter.put("/candidates/:id/fields", async (req: Request, res: Response) => {
+  try {
+    const db = await getProTalkDB();
+    const rawId = String(req.params.id || "").trim();
+    const cleanId = rawId.replace(/^candidate/i, "").replace(/^cand/i, "").trim();
+    const existingRow = await db.get(
+      `SELECT * FROM candidates
+       WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ?
+          OR CAST(legacy_public_id AS TEXT) = ?
+       LIMIT 1`,
+      [rawId, cleanId, cleanId, rawId, cleanId]
+    );
+
+    if (!existingRow) {
+      return res.status(404).json({ ok: false, error: "Кандидат не найден" });
+    }
+
+    const curStd = extractStandardFieldsFromCandidateRow(existingRow);
+    const curCust = extractCustomFieldsFromCandidateRow(existingRow);
+    const bodyStd = req.body?.standardFields || req.body?.standard_fields || {};
+    const bodyCust = req.body?.customFields || req.body?.custom_fields || {};
+
+    const nextStd: Record<string, any> = { ...curStd, ...bodyStd };
+    for (const def of STANDARD_CANDIDATE_FIELDS) {
+      if (req.body?.[def.key] !== undefined) {
+        nextStd[def.key] = req.body[def.key];
+      }
+    }
+    if (nextStd.telegram !== undefined && nextStd.social_telegram === undefined) {
+      nextStd.social_telegram = nextStd.telegram;
+    }
+    if (nextStd.telegram_alt !== undefined && !nextStd.social_telegram) {
+      nextStd.social_telegram = nextStd.telegram_alt;
+    }
+
+    const nextCust: Record<string, any> = { ...curCust, ...bodyCust };
+    const toStrVal = (v: any) => (Array.isArray(v) ? v.join(", ") : v !== undefined && v !== null ? String(v) : undefined);
+
+    const mergedCand: Record<string, any> = {
+      ...existingRow,
+      id: existingRow.id,
+      full_name: nextStd.full_name !== undefined ? String(nextStd.full_name || "") : existingRow.full_name,
+      phone: nextStd.phone !== undefined ? String(nextStd.phone || "") : existingRow.phone,
+      email: nextStd.email !== undefined ? String(nextStd.email || "").trim().toLowerCase() || existingRow.email : existingRow.email,
+      resume_url: nextStd.resume_url !== undefined ? String(nextStd.resume_url || "") : existingRow.resume_url,
+      social_telegram: nextStd.social_telegram !== undefined ? String(nextStd.social_telegram || "") : existingRow.social_telegram,
+      social_whatsapp: nextStd.social_whatsapp !== undefined ? String(nextStd.social_whatsapp || "") : existingRow.social_whatsapp,
+      social_instagram: nextStd.social_instagram !== undefined ? String(nextStd.social_instagram || "") : existingRow.social_instagram,
+      social_vk: nextStd.social_vk !== undefined ? String(nextStd.social_vk || "") : existingRow.social_vk,
+      social_max: nextStd.social_max !== undefined ? String(nextStd.social_max || "") : existingRow.social_max,
+      social_setka: nextStd.social_setka !== undefined ? String(nextStd.social_setka || "") : existingRow.social_setka,
+      social_github: nextStd.social_github !== undefined ? String(nextStd.social_github || "") : existingRow.social_github,
+      gender: toStrVal(nextStd.gender) ?? existingRow.gender,
+      country: toStrVal(nextStd.country) ?? existingRow.country,
+      region: toStrVal(nextStd.region) ?? existingRow.region,
+      city: toStrVal(nextStd.city) ?? existingRow.city,
+      citizenship: toStrVal(nextStd.citizenship) ?? existingRow.citizenship,
+      work_experience: toStrVal(nextStd.work_experience) ?? existingRow.work_experience,
+      employment_type: toStrVal(nextStd.employment_type) ?? existingRow.employment_type,
+      specializations: toStrVal(nextStd.specializations) ?? existingRow.specializations,
+      work_schedule: toStrVal(nextStd.work_schedule) ?? existingRow.work_schedule,
+      desired_commute_time: toStrVal(nextStd.desired_commute_time) ?? existingRow.desired_commute_time,
+      desired_salary: toStrVal(nextStd.desired_salary) ?? existingRow.desired_salary,
+      education: toStrVal(nextStd.education) ?? existingRow.education,
+      languages: toStrVal(nextStd.languages) ?? existingRow.languages,
+      skills: toStrVal(nextStd.skills) ?? existingRow.skills,
+      driving_experience: toStrVal(nextStd.driving_experience) ?? existingRow.driving_experience,
+      standard_fields: nextStd,
+      standard_fields_json: nextStd,
+      custom_fields: nextCust,
+      custom_fields_json: nextCust,
+    };
+
+    await saveCandidateToProTalkDB(db, mergedCand);
+
+    // Ensure cleared fields are also reflected in JSON columns explicitly
+    await db.run(
+      `UPDATE candidates SET standard_fields_json = ?, custom_fields_json = ?, updated_at = NOW() WHERE id = ?`,
+      [JSON.stringify(nextStd), JSON.stringify(nextCust), existingRow.id]
+    );
+
+    const updatedRow = await db.get(`SELECT * FROM candidates WHERE id = ? LIMIT 1`, [existingRow.id]);
+
+    return res.json({
+      ok: true,
+      standardFields: nextStd,
+      standard_fields: nextStd,
+      customFields: nextCust,
+      custom_fields: nextCust,
+      candidate: updatedRow || mergedCand,
+    });
+  } catch (err: any) {
+    console.error("[PUT /candidates/:id/fields Error]:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Не удалось сохранить поля кандидата" });
+  }
+});
+
 mutationsAndEvalRouter.delete("/candidates/:id", async (req: Request, res: Response) => {
   try {
     const db = await getProTalkDB();
@@ -225,7 +351,7 @@ mutationsAndEvalRouter.post("/evaluate-interview", async (req: Request, res: Res
   let assessmentSummary =
     "Интервью пройдено успешно. Кандидат показал хорошие общие знания, резюме совпадает с требованиями. Рекомендовано назначить обучение.";
 
-  const roleName = candidate.role_name || candidate.roleName || project?.role_name || "Специалист";
+  const roleName = String(project?.role_name || candidate.role_name || candidate.roleName || "Специалист").trim();
   const companyName = project ? project.company_name || project.companyName : "Работодатель";
   const answersDesc = (candidateAnswers || [])
     .map((a: any) => `Вопрос: "${a.question}"\nОтвет кандидата: "${a.answer}"`)

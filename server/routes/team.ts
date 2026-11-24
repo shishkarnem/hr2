@@ -155,15 +155,22 @@ teamRouter.get("/companies/:companyId/members", async (req: Request, res: Respon
       return res.status(404).json({ ok: false, error: "Компания не найдена" });
     }
 
-    const ownerId = comp.owner_employer_id || comp.employer_id || "100007";
-    const owner = await db.get(
-      "SELECT id, public_id, name, company_name, email, phone, COALESCE(avatar_url, '') AS avatar_url FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
-      [ownerId, ownerId]
-    );
+    const ownerId = comp.owner_employer_id || comp.employer_id || "";
+    const owner = ownerId
+      ? await db.get(
+          `SELECT id, public_id, name, contact_name, company_name, email, contact_email, phone, contact_phone,
+                  COALESCE(NULLIF(contact_telegram, ''), COALESCE(telegram_username, '')) AS telegram,
+                  COALESCE(avatar_url, '') AS avatar_url
+           FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1`,
+          [ownerId, String(ownerId)]
+        )
+      : null;
 
     const members = (await db.all(
       `SELECT cm.id, cm.company_id, cm.employer_id, cm.owner_employer_id, cm.role, cm.permissions_json, cm.status, cm.created_at, cm.updated_at,
-              e.name, e.company_name, e.email, e.phone, COALESCE(e.avatar_url, '') AS avatar_url, e.public_id as employer_public_id
+              e.name, e.contact_name, e.company_name, e.email, e.contact_email, e.phone, e.contact_phone,
+              COALESCE(NULLIF(e.contact_telegram, ''), COALESCE(e.telegram_username, '')) AS telegram,
+              COALESCE(e.avatar_url, '') AS avatar_url, e.public_id as employer_public_id
        FROM company_members cm
        LEFT JOIN employers e ON (cm.employer_id = e.id OR cm.employer_id = CAST(e.public_id AS TEXT))
        WHERE cm.company_id = ? AND cm.status != 'revoked'
@@ -181,9 +188,10 @@ teamRouter.get("/companies/:companyId/members", async (req: Request, res: Respon
         company_id: m.company_id,
         employer_id: m.employer_id,
         employer_public_id: m.employer_public_id || m.employer_id,
-        name: m.name || m.company_name || "Сотрудник",
-        email: m.email || "",
-        phone: m.phone || "",
+        name: m.contact_name || m.name || m.company_name || "Сотрудник",
+        email: m.contact_email || m.email || "",
+        phone: m.contact_phone || m.phone || "",
+        telegram: m.telegram || "",
         avatar_url: m.avatar_url || "",
         role: m.role || "member",
         permissions: perms,
@@ -205,9 +213,10 @@ teamRouter.get("/companies/:companyId/members", async (req: Request, res: Respon
         ? {
             id: owner.id,
             public_id: owner.public_id || owner.id,
-            name: owner.name || owner.company_name || "Владелец",
-            email: owner.email || "",
-            phone: owner.phone || "",
+            name: owner.contact_name || owner.name || owner.company_name || "Владелец",
+            email: owner.contact_email || owner.email || "",
+            phone: owner.contact_phone || owner.phone || "",
+            telegram: owner.telegram || "",
             avatar_url: owner.avatar_url || "",
             role: "owner",
           }

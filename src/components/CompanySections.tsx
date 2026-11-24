@@ -49,8 +49,8 @@ type Props = {
   getVacancyUrl?: (v: JobProject) => string;
   /** Hide the in-page sticky tabs (when the parent renders them in the header). */
   hideStickyNav?: boolean;
-  /** Height in px for website preview / screenshot */
-  sitePreviewHeight?: number;
+  /** Height in px for website preview / screenshot (null = auto) */
+  sitePreviewHeight?: number | null;
   /** Display mode for primary website: 'preview' (banner screenshot) vs 'buttons' (compact button) */
   siteDisplayMode?: "preview" | "buttons";
   /** Full real-time theme config */
@@ -567,12 +567,25 @@ export default function CompanySections({
   if (company.theme_config) {
     themeObj = typeof company.theme_config === "string" ? JSON.parse(company.theme_config) : company.theme_config;
   }
-  const effectiveMode = siteDisplayMode || themeConfig?.siteDisplayMode || themeObj?.siteDisplayMode || "preview";
-  const effectiveHeight = sitePreviewHeight !== undefined ? sitePreviewHeight : (themeConfig?.sitePreviewHeight !== undefined ? themeConfig.sitePreviewHeight : (themeObj?.sitePreviewHeight !== undefined ? themeObj.sitePreviewHeight : 180));
-  const isButtonsOnlyMode = effectiveMode === "buttons" || effectiveHeight === 0;
+  const mergedTheme = themeConfig && typeof themeConfig === "object" && Object.keys(themeConfig).length > 0
+    ? { ...themeObj, ...themeConfig }
+    : themeObj;
+  const effectiveMode = siteDisplayMode || mergedTheme?.siteDisplayMode || "preview";
+  const rawThemeHeight = sitePreviewHeight !== undefined
+    ? sitePreviewHeight
+    : mergedTheme?.sitePreviewHeight;
+  const isButtonsOnlyMode = effectiveMode === "buttons" || rawThemeHeight === 0;
 
   // 1st site for main header banner, subsequent sites for header buttons
   const primarySite = parsedSites.length > 0 ? parsedSites[0] : null;
+  const primarySiteDefaultHeight = typeof primarySite === "object" ? primarySite?.heightPx : undefined;
+  // null => responsive Auto aspect ratio (16/6); number => exact px; undefined => site default or 180
+  const resolvedBannerHeight: number | undefined =
+    rawThemeHeight === null
+      ? undefined
+      : typeof rawThemeHeight === "number"
+      ? rawThemeHeight
+      : primarySiteDefaultHeight || 180;
   const additionalSites = isButtonsOnlyMode ? parsedSites : parsedSites.length > 1 ? parsedSites.slice(1) : [];
 
   // Content flags for the sections
@@ -690,23 +703,23 @@ export default function CompanySections({
 
         {/* Primary site banner preview */}
         {primarySite && !isButtonsOnlyMode && (
-          <div className="relative mb-6 z-[1]">
+          <div className="relative mb-6 z-[2]">
             <SitePreview
               url={typeof primarySite === "string" ? primarySite : primarySite.url}
               title={typeof primarySite === "object" ? primarySite.title : undefined}
               customScreenshot={typeof primarySite === "object" ? primarySite.customScreenshot : undefined}
-              heightPx={sitePreviewHeight || (typeof primarySite === "object" ? primarySite.heightPx : undefined)}
+              heightPx={resolvedBannerHeight}
               variant="banner"
-              filterColor={themeConfig?.sitePreviewFilterColor || themeObj?.sitePreviewFilterColor}
-              filterOpacity={themeConfig?.sitePreviewFilterOpacity ?? themeObj?.sitePreviewFilterOpacity}
-              screenshotFilterColor={themeConfig?.siteScreenshotFilterColor || themeObj?.siteScreenshotFilterColor}
-              screenshotFilterOpacity={themeConfig?.siteScreenshotFilterOpacity ?? themeObj?.siteScreenshotFilterOpacity}
-              themeConfig={themeConfig}
+              filterColor={mergedTheme?.sitePreviewFilterColor}
+              filterOpacity={mergedTheme?.sitePreviewFilterOpacity}
+              screenshotFilterColor={mergedTheme?.siteScreenshotFilterColor}
+              screenshotFilterOpacity={mergedTheme?.siteScreenshotFilterOpacity}
+              themeConfig={mergedTheme}
             />
           </div>
         )}
 
-        <div className="relative z-[1] flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div className="relative z-[2] flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex flex-col sm:flex-row items-center sm:items-start md:items-center text-center sm:text-left gap-4 sm:gap-5 min-w-0 w-full md:w-auto flex-1">
             <CompanyLandingLogo
               src={company.logo_url}
@@ -761,14 +774,14 @@ export default function CompanySections({
 
         {/* Company description directly in Hero across full container width, positioned below buttons */}
         {(company.description_text || company.description) && (
-          <div className="relative z-[1] mt-5 pt-4 border-t border-white/15 text-left text-sm sm:text-base leading-relaxed text-slate-200 w-full">
+          <div className="relative z-[2] mt-5 pt-4 border-t border-white/15 text-left text-sm sm:text-base leading-relaxed text-slate-200 w-full">
             {renderText(company.description_text || company.description)}
           </div>
         )}
 
         {/* Additional sites rendered as Apple Liquid Glass buttons */}
         {additionalSites.length > 0 && (
-          <div className="mt-6 pt-5 border-t border-white/15 flex flex-wrap items-center gap-3">
+          <div className="relative z-[2] mt-6 pt-5 border-t border-white/15 flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium text-slate-300">
               Сайты и ресурсы:
             </span>
@@ -781,7 +794,7 @@ export default function CompanySections({
                   url={url}
                   title={title}
                   variant="compact"
-                  themeConfig={themeConfig}
+                  themeConfig={mergedTheme}
                 />
               );
             })}

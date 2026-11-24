@@ -64,9 +64,11 @@ interface FallbackConfig {
   onSuccess?: (data: any) => void | Promise<void>;
 }
 
+export type AIWaitProgressReporter = (pct: number, stageLabel?: string) => void;
+
 interface RunOptions<T> {
   title?: string;
-  task: (attempt: number) => Promise<T>;
+  task: (attempt: number, reportProgress: AIWaitProgressReporter) => Promise<T>;
   timeoutMs?: number;
   autoCloseOnSuccess?: boolean;
   /** Don't block the awaiting caller — resolve immediately, overlay handles UI */
@@ -75,6 +77,10 @@ interface RunOptions<T> {
   fallback?: FallbackConfig;
   /** Optional company style theme */
   theme?: any;
+  /** Optional custom stage labels for the progress bar */
+  stages?: string[];
+  /** Optional custom message when task completes */
+  successMessage?: string;
 }
 
 interface AIWaitContextValue {
@@ -89,7 +95,7 @@ export function useAIWait(): AIWaitContextValue {
     // Soft-fallback: if provider missing, just run the task without UI
     return {
       run: async ({ task }) => {
-        try { return await task(0); } catch { return undefined; }
+        try { return await task(0, () => {}); } catch { return undefined; }
       },
     };
   }
@@ -105,7 +111,7 @@ interface State {
   error: string;
   attemptCount: number;
   // Internal control — current task and resolver
-  task: ((attempt: number) => Promise<any>) | null;
+  task: ((attempt: number, reportProgress: AIWaitProgressReporter) => Promise<any>) | null;
   resolver: ((v: any) => void) | null;
   timeoutMs: number;
   autoCloseOnSuccess: boolean;
@@ -115,6 +121,10 @@ interface State {
   fallbackPhase: "connecting" | "running" | null;
   fallbackBusy: boolean;
   theme?: any;
+  stages?: string[];
+  progressPct: number | null;
+  progressLabel: string | null;
+  successMessage?: string;
 }
 
 export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -136,6 +146,10 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     fallbackPhase: null,
     fallbackBusy: false,
     theme: null,
+    stages: undefined,
+    progressPct: null,
+    progressLabel: null,
+    successMessage: undefined,
   });
 
   const cancelledRef = useRef(false);
@@ -193,13 +207,15 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const beginTask = useCallback((
     title: string,
-    task: (attempt: number) => Promise<any>,
+    task: (attempt: number, reportProgress: AIWaitProgressReporter) => Promise<any>,
     timeoutMs: number,
     autoCloseOnSuccess: boolean,
     resolver: ((v: any) => void) | null,
     fallback: FallbackConfig | null,
     attemptCount: number = 0,
-    theme: any = null
+    theme: any = null,
+    stages?: string[],
+    successMessage?: string
   ) => {
     cancelledRef.current = false;
     busyRef.current = true;
@@ -228,7 +244,24 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       fallbackPhase: null,
       fallbackBusy: false,
       theme: theme || null,
+      stages,
+      progressPct: null,
+      progressLabel: null,
+      successMessage,
     });
+
+    const reportProgress: AIWaitProgressReporter = (pct, stageLabel) => {
+      if (cancelledRef.current) return;
+      setState((s) =>
+        s.status === "loading"
+          ? {
+              ...s,
+              progressPct: Math.max(0, Math.min(100, pct)),
+              progressLabel: stageLabel ?? s.progressLabel,
+            }
+          : s
+      );
+    };
 
     const startedAt = Date.now();
     const timeoutP = new Promise<never>((_, rej) => {
@@ -239,7 +272,7 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       (window as any).__RR_FORCE_PROMAX = attemptCount > 0;
     }
 
-    Promise.race([task(attemptCount), timeoutP])
+    Promise.race([task(attemptCount, reportProgress), timeoutP])
       .then(async (result) => {
         if (typeof window !== "undefined") {
           (window as any).__RR_FORCE_PROMAX = false;
@@ -308,12 +341,12 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const theme = getActiveCompanyTheme(opts.theme);
 
     if (opts.fireAndForget) {
-      beginTask(title, opts.task, timeoutMs, autoCloseOnSuccess, null, fallback, 0, theme);
+      beginTask(title, opts.task, timeoutMs, autoCloseOnSuccess, null, fallback, 0, theme, opts.stages, opts.successMessage);
       return Promise.resolve(undefined);
     }
 
     return new Promise<T | undefined>((resolve) => {
-      beginTask(title, opts.task, timeoutMs, autoCloseOnSuccess, resolve as (v: any) => void, fallback, 0, theme);
+      beginTask(title, opts.task, timeoutMs, autoCloseOnSuccess, resolve as (v: any) => void, fallback, 0, theme, opts.stages, opts.successMessage);
     });
   }, [beginTask]);
 
@@ -339,7 +372,7 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!state.task) return;
     if (state.fallbackBusy) return; // защита от двойного клика
     const nextAttempt = state.attemptCount + 1;
-    beginTask(state.title, state.task, state.timeoutMs, state.autoCloseOnSuccess, state.resolver, state.fallback, nextAttempt, state.theme);
+    beginTask(state.title, state.task, state.timeoutMs, state.autoCloseOnSuccess, state.resolver, state.fallback, nextAttempt, state.theme, state.stages, state.successMessage);
   }, [state, beginTask]);
 
   const handleCancel = useCallback(() => {
@@ -467,6 +500,10 @@ export const AIWaitProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           onCancel={handleCancel}
           onNext={handleNext}
           theme={state.theme}
+          stages={state.stages}
+          progressPct={state.progressPct}
+          progressLabel={state.progressLabel}
+          successMessage={state.successMessage}
         />)
       )}
     </AIWaitContext.Provider>

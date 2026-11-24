@@ -223,12 +223,13 @@ export const handleGradeSituations = async (req: Request, res: Response) => {
     const promptData = await getProTalkPrompt(
       promptKey,
       `Ты — эксперт по ролевым интервью и оценке практических кейсов на собеседовании. Должность: "{{title}}".
-По каждой ситуации оцени ответ кандидата от 0 до 100 баллов с учётом критериев и дай развёрнутый комментарий (2-3 предложения).
+По каждой ситуации оцени ответ кандидата от 0 до 100 баллов с учётом критериев, дай развёрнутый комментарий (2-3 предложения) и конкретную рекомендацию.
+ВАЖНО: Пиши "feedback", "recommendation" и "advice" строго во втором лице (обращаясь напрямую к кандидату на «Вы»: «Вам стоит...», «В Вашем ответе...»), без инструкций работодателю («попросите кандидата», «уточните у соискателя»).
 
 Ситуации и ответы:
 {{situations_json}}
 
-Верни строго JSON: {"items":[{"id":string,"score":0..100,"raw_score":0..100,"ai_detected":boolean,"feedback":string}],"advice":string}`,
+Верни строго JSON: {"items":[{"id":string,"score":0..100,"raw_score":0..100,"ai_detected":boolean,"feedback":string,"recommendation":string}],"advice":string}`,
       isProMax
     );
 
@@ -236,7 +237,7 @@ export const handleGradeSituations = async (req: Request, res: Response) => {
 Ситуации и ответы:
 ${JSON.stringify(items)}
 
-Верни строго JSON: {"items":[{"id":string,"score":0..100,"raw_score":0..100,"ai_detected":boolean,"feedback":string}],"advice":string}`;
+Верни строго JSON (обращаясь к кандидату на «Вы»): {"items":[{"id":string,"score":0..100,"raw_score":0..100,"ai_detected":boolean,"feedback":string,"recommendation":string}],"advice":string}`;
 
     const llmMessages = buildLlmMessagesFromPrompt(
       promptData,
@@ -322,10 +323,14 @@ ${JSON.stringify(items)}
         }
       }
 
+      const rawRec = String(it.recommendation || "").trim();
+      const isEmployerOnlyRec = /(рекомендуется\s+продолжить\s+рассмотрение|рассмотрение\s+кандидат|на\s+интервью\s+уточнить|^(попросите|уточните\s+у|проверьте\s+у)\s+(кандидат|соискател)|\bкандидат[ауеом]?\b.*\b(он|его|ему|им)\b)/i.test(rawRec);
+      const candidateRec = rawRec && !isEmployerOnlyRec ? rawRec : "";
+
       return {
         id: String(it.id || sItem?.id || `s${idx + 1}`),
         title: String(sItem?.title || it.title || `Ситуация #${idx + 1}`),
-        recommendation: String(it.recommendation || it.advice || sItem?.brief || ""),
+        recommendation: candidateRec,
         score: finalScore,
         raw_score: aiDetected ? (it.raw_score !== undefined ? rawParsed : finalScore * 2) : rawParsed,
         ai_detected: aiDetected,
@@ -342,13 +347,15 @@ ${JSON.stringify(items)}
         return {
           id: s.id,
           title: String(s.title || `Ситуация #${idx + 1}`),
-          recommendation: String(s.brief || ""),
+          recommendation: userAns
+            ? (sc < 70 ? "Добавьте в решение конкретные шаги, аргументы и ожидаемый результат для клиента/команды." : "")
+            : "Предоставьте развёрнутый ответ с описанием ваших действий в этой ситуации.",
           score: sc,
           raw_score: baseSc,
           ai_detected: aiDetected,
           feedback: aiDetected
             ? `Ответ проанализирован. Защита от нейросетей: обнаружены признаки генерации ответа ИИ — балл снижен в 2 раза (${baseSc} → ${sc}).`
-            : (userAns ? "Ответ кандидата проанализирован по критериям ролевого кейса." : "Ответ не предоставлен."),
+            : (userAns ? "Ваш ответ проанализирован по критериям ролевого кейса." : "Ответ не предоставлен."),
         };
       });
     }

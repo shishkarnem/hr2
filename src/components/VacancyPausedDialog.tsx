@@ -7,11 +7,22 @@ import { useEffect, useState } from "react";
 import { dbClient } from "@/lib/dbClient";
 import { Mail, MessageCircle, AlertTriangle, X } from "lucide-react";
 
+type ResponsibleContactItem = {
+  id?: string;
+  name?: string | null;
+  roleTitle?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  telegram?: string | null;
+};
+
 type Contacts = {
   company_name?: string | null;
   contact_name?: string | null;
   contact_email?: string | null;
+  contact_phone?: string | null;
   contact_tg?: string | null;
+  list?: ResponsibleContactItem[];
 };
 
 export function VacancyPausedDialog({
@@ -35,12 +46,16 @@ export function VacancyPausedDialog({
         const { data } = await dbClient.rpc("get_vacancy_employer_contacts", { _project_id: projectId });
         if (cancelled) return;
         const d: any = data;
-        if (d?.ok) setContacts({
-          company_name: d.company_name,
-          contact_name: d.contact_name,
-          contact_email: d.contact_email,
-          contact_tg: d.contact_tg,
-        });
+        if (d && (d.ok || d.email || d.phone || d.telegram || (Array.isArray(d.contacts) && d.contacts.length > 0))) {
+          setContacts({
+            company_name: d.company_name || d.companyName,
+            contact_name: d.contact_name || d.name,
+            contact_email: d.contact_email || d.email,
+            contact_phone: d.contact_phone || d.phone,
+            contact_tg: d.contact_tg || d.telegram,
+            list: Array.isArray(d.contacts) ? d.contacts : [],
+          });
+        }
       } finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
@@ -48,7 +63,19 @@ export function VacancyPausedDialog({
 
   if (!open) return null;
 
-  const tg = (contacts?.contact_tg || "").replace(/^@/, "");
+  const listItems: ResponsibleContactItem[] =
+    contacts?.list && contacts.list.length > 0
+      ? contacts.list
+      : contacts && (contacts.contact_name || contacts.contact_email || contacts.contact_phone || contacts.contact_tg)
+      ? [
+          {
+            name: contacts.contact_name,
+            email: contacts.contact_email,
+            phone: contacts.contact_phone,
+            telegram: contacts.contact_tg,
+          },
+        ]
+      : [];
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-transparent backdrop-blur-md">
@@ -71,26 +98,47 @@ export function VacancyPausedDialog({
         {loading ? (
           <div className="relative z-10 text-sm text-white/70">Загружаем контакты…</div>
         ) : contacts ? (
-          <div className="relative z-10 rounded-2xl bg-transparent backdrop-blur-md border border-white/25 p-4 space-y-2 text-sm">
+          <div className="relative z-10 rounded-2xl bg-transparent backdrop-blur-md border border-white/25 p-4 space-y-3 text-sm max-h-[45vh] overflow-y-auto">
             {contacts.company_name ? (
               <div className="font-bold text-[#E7C768]">{contacts.company_name}</div>
             ) : null}
-            {contacts.contact_name ? (
-              <div className="text-white/90">{contacts.contact_name}</div>
-            ) : null}
-            {contacts.contact_email ? (
-              <a href={`mailto:${contacts.contact_email}`} className="flex items-center gap-2 text-white hover:text-[#E7C768]">
-                <Mail className="w-4 h-4 text-[#E7C768]" /> {contacts.contact_email}
-              </a>
-            ) : null}
-            {tg ? (
-              <a href={`https://t.me/${tg}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-white hover:text-[#E7C768]">
-                <MessageCircle className="w-4 h-4 text-[#E7C768]" /> @{tg}
-              </a>
-            ) : null}
-            {!contacts.contact_email && !tg ? (
+            {listItems.length > 0 ? (
+              <div className="space-y-3">
+                {listItems.map((person, idx) => {
+                  const tgClean = (person.telegram || "").replace(/^@/, "");
+                  return (
+                    <div
+                      key={person.id || `${idx}`}
+                      className={idx > 0 ? "pt-3 border-t border-white/15 space-y-1.5" : "space-y-1.5"}
+                    >
+                      {person.name ? (
+                        <div className="font-semibold text-white">
+                          {person.name}
+                          {person.roleTitle ? <span className="text-white/70 font-normal"> · {person.roleTitle}</span> : null}
+                        </div>
+                      ) : null}
+                      {person.email ? (
+                        <a href={`mailto:${person.email}`} className="flex items-center gap-2 text-white hover:text-[#E7C768] break-all">
+                          <Mail className="w-4 h-4 text-[#E7C768] shrink-0" /> {person.email}
+                        </a>
+                      ) : null}
+                      {person.phone ? (
+                        <a href={`tel:${person.phone}`} className="flex items-center gap-2 text-white hover:text-[#E7C768]">
+                          <MessageCircle className="w-4 h-4 text-[#E7C768] shrink-0" /> {person.phone}
+                        </a>
+                      ) : null}
+                      {tgClean ? (
+                        <a href={`https://t.me/${tgClean}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-white hover:text-[#E7C768]">
+                          <MessageCircle className="w-4 h-4 text-[#E7C768] shrink-0" /> @{tgClean}
+                        </a>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
               <div className="text-sm text-white/70">Контакты работодателя не указаны. Попробуйте позже.</div>
-            ) : null}
+            )}
           </div>
         ) : null}
         <div className="relative z-10 flex justify-end">

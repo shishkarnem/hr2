@@ -97,12 +97,19 @@ export default function App() {
               <Route path="/candidate" element={<CandidateFlow />} />
               <Route path="/candidate/*" element={<CandidateFlow />} />
               <Route path="/company/:slug" element={<CompanyLanding />} />
-              <Route path="/offer" element={<OfferPage />} />
-              <Route path="/oferta" element={<OfferPage />} />
+              <Route path="/offer" element={<OfferPage docType="offer" audience="employer" />} />
+              <Route path="/oferta" element={<OfferPage docType="offer" audience="employer" />} />
+              <Route path="/privacy" element={<OfferPage docType="privacy" audience="employer" />} />
+              <Route path="/terms" element={<OfferPage docType="terms" audience="employer" />} />
+              <Route path="/agreement" element={<OfferPage docType="terms" audience="employer" />} />
+              <Route path="/consent" element={<OfferPage docType="consent" audience="employer" />} />
+              <Route path="/candidate-privacy" element={<OfferPage docType="privacy" audience="candidate" />} />
+              <Route path="/candidate-terms" element={<OfferPage docType="terms" audience="candidate" />} />
+              <Route path="/candidate-consent" element={<OfferPage docType="consent" audience="candidate" />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
               <Route path="/payment/success" element={<PaymentSuccessPage />} />
               <Route path="/payment/fail" element={<PaymentFailPage />} />
-              <Route path="/payment/info" element={<OfferPage />} />
+              <Route path="/payment/info" element={<OfferPage docType="offer" audience="employer" />} />
               {/* Dynamic concatenated segments: /employer{id}/..., /candidate{id}/..., or company slug */}
               <Route path="/:firstSeg" element={<SegmentDispatcher />} />
               <Route path="/:firstSeg/*" element={<SegmentDispatcher />} />

@@ -120,7 +120,7 @@ export default function EmployerTrainingSummaryReport({ report }: { report: Trai
         </S>
       )}
       {redFlags.length > 0 && (
-        <S title="Красные флаги">
+        <S title="Особые отметки">
           <div className="space-y-2">
             {redFlags.map((r, i) => (
               <div key={i} className="text-[14px] bg-transparent border border-white/30 rounded-xl p-3 backdrop-blur-xl">

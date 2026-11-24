@@ -201,6 +201,12 @@ employerAuthRouter.post(["/employer/login", "/auth/employer/login"], async (req:
     const token = createSignedEmployerToken(emp);
     const userRole =
       emp.role || (pubId === "100007" || (emp.email && emp.email.toLowerCase() === "shishkarnem@gmail.com") ? "admin" : "employer");
+    const { parseNotificationsConfig } = await import("../../services/push/pushService");
+    const parsedNotif = parseNotificationsConfig(emp.notifications_config, "employer");
+    const resolvedChatId =
+      emp.telegram_chat_id !== undefined && emp.telegram_chat_id !== null
+        ? String(emp.telegram_chat_id).trim()
+        : String(parsedNotif.telegram_user_ids || "").trim();
 
     res.json({
       success: true,
@@ -221,8 +227,9 @@ employerAuthRouter.post(["/employer/login", "/auth/employer/login"], async (req:
         telegram: emp.contact_telegram || emp.telegram_username || "",
         telegram_username: emp.telegram_username || emp.contact_telegram || "",
         contact_telegram: emp.contact_telegram || emp.telegram_username || "",
-        telegram_chat_id: emp.telegram_chat_id || "",
-        telegramChatId: emp.telegram_chat_id || "",
+        telegram_chat_id: resolvedChatId,
+        telegramChatId: resolvedChatId,
+        notifications_config: parsedNotif,
         role: userRole,
         is_admin: userRole === "admin",
         created_at: emp.created_at,
@@ -246,6 +253,12 @@ employerAuthRouter.get(["/employer/me", "/auth/employer/me"], async (req: Reques
       const userRole =
         emp.role || (pubId === "100007" || (emp.email && emp.email.toLowerCase() === "shishkarnem@gmail.com") ? "admin" : "employer");
       const creditsAndBal = await resolveEmployerCreditsAndBalance(db, emp);
+      const { parseNotificationsConfig } = await import("../../services/push/pushService");
+      const parsedNotif = parseNotificationsConfig(emp.notifications_config, "employer");
+      const resolvedChatId =
+        emp.telegram_chat_id !== undefined && emp.telegram_chat_id !== null
+          ? String(emp.telegram_chat_id).trim()
+          : String(parsedNotif.telegram_user_ids || "").trim();
 
       return res.json({
         user: {
@@ -264,8 +277,9 @@ employerAuthRouter.get(["/employer/me", "/auth/employer/me"], async (req: Reques
           telegram: emp.contact_telegram || emp.telegram_username || "",
           telegram_username: emp.telegram_username || emp.contact_telegram || "",
           contact_telegram: emp.contact_telegram || emp.telegram_username || "",
-          telegram_chat_id: emp.telegram_chat_id || "",
-          telegramChatId: emp.telegram_chat_id || "",
+          telegram_chat_id: resolvedChatId,
+          telegramChatId: resolvedChatId,
+          notifications_config: parsedNotif,
           role: userRole,
           is_admin: userRole === "admin",
           created_at: emp.created_at,
@@ -695,26 +709,70 @@ employerAuthRouter.post(["/employer/update-profile", "/auth/employer/update-prof
     if (newTg.startsWith("@")) newTg = newTg.substring(1).trim();
 
     const rawChatId = telegram_chat_id !== undefined ? telegram_chat_id : telegramChatId;
-    const newChatId = rawChatId !== undefined && rawChatId !== null ? String(rawChatId).trim() : emp.telegram_chat_id || "";
     const rawNotif = req.body.notifications_config || req.body.notificationsConfig;
-    let notifConfigStr = emp.notifications_config || "{}";
+    const { mergeNotificationsConfig, parseNotificationsConfig } = await import("../../services/push/pushService");
+
+    let incNotif: any = {};
     if (rawNotif !== undefined) {
-      notifConfigStr = typeof rawNotif === "string" ? rawNotif : JSON.stringify(rawNotif);
+      try {
+        incNotif = typeof rawNotif === "string" ? JSON.parse(rawNotif) : { ...rawNotif };
+      } catch {
+        incNotif = {};
+      }
     }
 
-    await db.run(
-      `UPDATE employers SET
-         name = ?, contact_name = ?, email = ?, contact_email = ?, company_name = ?,
-         phone = ?, contact_phone = ?, contact_telegram = ?, telegram_username = ?,
-         telegram_chat_id = ?, notifications_config = ?, updated_at = NOW()
-       WHERE id = ?`,
-      [newName, newName, newEmail, newEmail, newCompany, newPhone, newPhone, newTg, newTg, newChatId, notifConfigStr, emp.id]
-    );
+    let newChatId =
+      rawChatId !== undefined && rawChatId !== null
+        ? String(rawChatId).trim()
+        : incNotif?.telegram_user_ids !== undefined
+        ? String(incNotif.telegram_user_ids ?? "").trim()
+        : String(emp.telegram_chat_id ?? "").trim();
+
+    if (rawChatId !== undefined) {
+      incNotif.telegram_user_ids = newChatId;
+    }
+
+    const mergedNotif =
+      rawNotif !== undefined || rawChatId !== undefined
+        ? mergeNotificationsConfig(emp.notifications_config, incNotif, "employer")
+        : parseNotificationsConfig(emp.notifications_config, "employer");
+
+    if (rawChatId !== undefined || incNotif?.telegram_user_ids !== undefined) {
+      mergedNotif.telegram_user_ids = newChatId;
+    } else if (mergedNotif.telegram_user_ids !== undefined) {
+      newChatId = String(mergedNotif.telegram_user_ids || "").trim();
+    }
+    const notifConfigStr = JSON.stringify(mergedNotif);
+
+    try {
+      await db.run(
+        `UPDATE employers SET
+           name = ?, contact_name = ?, email = ?, contact_email = ?, company_name = ?,
+           phone = ?, contact_phone = ?, contact_telegram = ?, telegram_username = ?,
+           telegram_chat_id = ?, notifications_config = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [newName, newName, newEmail, newEmail, newCompany, newPhone, newPhone, newTg, newTg, newChatId, notifConfigStr, emp.id]
+      );
+    } catch (chatErr: any) {
+      const numericFallback = /^-?\d+$/.test(newChatId) ? newChatId : null;
+      await db.run(
+        `UPDATE employers SET
+           name = ?, contact_name = ?, email = ?, contact_email = ?, company_name = ?,
+           phone = ?, contact_phone = ?, contact_telegram = ?, telegram_username = ?,
+           telegram_chat_id = ?, notifications_config = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [newName, newName, newEmail, newEmail, newCompany, newPhone, newPhone, newTg, newTg, numericFallback, notifConfigStr, emp.id]
+      );
+      console.warn("[employerAuth/update-profile] Fallback telegram_chat_id update:", chatErr?.message);
+    }
 
     const updatedEmp = await db.get("SELECT * FROM employers WHERE id = ?", [emp.id]);
     const pubId = await ensureEmployerPublicId(db, updatedEmp);
-    let parsedNotifs = {};
-    try { if (updatedEmp.notifications_config) parsedNotifs = JSON.parse(updatedEmp.notifications_config); } catch {}
+    const parsedNotifs = parseNotificationsConfig(updatedEmp.notifications_config, "employer");
+    const respChatId =
+      updatedEmp.telegram_chat_id !== undefined && updatedEmp.telegram_chat_id !== null
+        ? String(updatedEmp.telegram_chat_id)
+        : parsedNotifs.telegram_user_ids || "";
 
     res.json({
       success: true,
@@ -729,7 +787,7 @@ employerAuthRouter.post(["/employer/update-profile", "/auth/employer/update-prof
         phone: updatedEmp.phone || updatedEmp.contact_phone,
         telegram: updatedEmp.contact_telegram || updatedEmp.telegram_username,
         contact_telegram: updatedEmp.contact_telegram || updatedEmp.telegram_username,
-        telegram_chat_id: updatedEmp.telegram_chat_id || "",
+        telegram_chat_id: respChatId,
         notifications_config: parsedNotifs,
         created_at: updatedEmp.created_at,
       },

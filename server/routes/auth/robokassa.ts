@@ -356,7 +356,12 @@ async function completeRobokassaPayment(
       `<b>🪙 Зачислено:</b> <b>+${totalAdded.toLocaleString("ru-RU")} RR</b>\n` +
       `<b>📦 Позиция в чеке:</b> <code>Цифровые единицы RR</code> (НДС: null)\n` +
       `<b>🕒 Время:</b> ${new Date().toLocaleString("ru-RU")}`;
-    await sendTelegramMessage(db, adminTgId, msg);
+    await sendTelegramMessage({
+      chatId: adminTgId,
+      text: msg,
+      parseMode: "HTML",
+      button: { text: "💳 Открыть оплаты в админке", url: "/admin" },
+    });
   } catch (tgErr: any) {
     console.warn("[Telegram notify error]:", tgErr?.message);
   }

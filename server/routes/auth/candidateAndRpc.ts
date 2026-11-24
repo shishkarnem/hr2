@@ -67,7 +67,7 @@ candidateAndRpcRouter.post(["/candidate/signup", "/auth/candidate/signup"], asyn
         password_hash, role_name, current_stage, stage, crm_stage, crm_stage_manual,
         auth_kind, registered_via, created_at, updated_at, last_login_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [candId, nextPubId, targetProjectId, targetCompanyId, candidateFullName, emailNorm, candidatePhone, passwordHash, targetRoleName, "terms", "screening", "registration", "0.0", "email", "email", nowIso, nowIso, nowIso]
+      [candId, nextPubId, targetProjectId, targetCompanyId, candidateFullName, emailNorm, candidatePhone, passwordHash, targetRoleName, "terms", "screening", "registration", 0, "email", "email", nowIso, nowIso, nowIso]
     );
 
     const token = `cand_token_${genId("session")}`;
@@ -83,6 +83,37 @@ candidateAndRpcRouter.post(["/candidate/signup", "/auth/candidate/signup"], asyn
       role_name: targetRoleName,
       created_at: nowIso,
     };
+
+    // Notify all vacancy responsibles across Bell, Web Push, and Telegram (per-responsible prefs + per-vacancy dedup)
+    try {
+      const { dispatchVacancyBellAndPushToResponsibles } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const { primaryLink } = await dispatchVacancyBellAndPushToResponsibles(db, {
+        projectId: targetProjectId,
+        projRow: projectRow,
+        fallbackEmpId: companyRow?.owner_employer_id || companyRow?.employer_id || null,
+        eventKey: "new_candidate",
+        kind: "new_candidate",
+        title: `Новый отклик: ${candidateFullName}`,
+        body: `Вакансия «${targetRoleName}». Кандидат зарегистрировался через Email.`,
+        linkBuilder: (pub) => `/emp${pub}/crm?candidate=${encodeURIComponent(String(nextPubId))}`,
+        meta: { candidate_id: String(nextPubId), project_id: targetProjectId },
+      });
+      if (targetProjectId) {
+        const { sendVacancyTelegramNotification } = await import("../../services/telegram");
+        await sendVacancyTelegramNotification(
+          db,
+          String(targetProjectId),
+          `🔔 <b>Новый кандидат!</b>\n👤 ${candidateFullName}\n💼 Вакансия: ${targetRoleName}\n📧 ${emailNorm}`,
+          {
+            eventKey: "new_candidate",
+            dedupKey: `new_cand_${nextPubId}`,
+            button: { text: "👤 Открыть кандидата в CRM", url: primaryLink },
+          }
+        );
+      }
+    } catch {}
 
     res.json({
       ok: true,
@@ -385,12 +416,45 @@ candidateAndRpcRouter.post("/rpc/:method", async (req: Request, res: Response) =
 
     if (method === "get_vacancy_employer_contacts") {
       const { _project_id } = body;
-      const proj = await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [_project_id, String(_project_id)]);
-      if (proj) {
-        const emp = await db.get("SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [proj.employer_id, String(proj.employer_id || "")]);
-        if (emp) return res.json({ phone: emp.phone, email: emp.email, name: emp.name, companyName: emp.company_name });
+      const proj = _project_id
+        ? await db.get("SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
+            _project_id,
+            String(_project_id),
+          ])
+        : null;
+      let comp: any = null;
+      if (proj?.company_id) {
+        comp = await db.get("SELECT * FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [
+          proj.company_id,
+          String(proj.company_id),
+        ]);
       }
-      return res.json({ phone: "+7 (999) 000-00-00", email: "hr@company.ru", name: "HR Департамент", companyName: "Компания" });
+      const { resolveVacancyResponsibleEmployers, formatResponsibleContacts } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const resolved = await resolveVacancyResponsibleEmployers(
+        db,
+        proj,
+        comp?.owner_employer_id || comp?.employer_id || null
+      );
+      const { primary, list } = formatResponsibleContacts(
+        resolved,
+        comp?.name || proj?.company_name || ""
+      );
+      return res.json({
+        ok: true,
+        phone: primary.phone || "",
+        email: primary.email || "",
+        telegram: primary.telegram || "",
+        name: primary.name || "",
+        companyName: primary.companyName || comp?.name || "",
+        company_name: primary.companyName || comp?.name || "",
+        contact_name: primary.name || "",
+        contact_email: primary.email || "",
+        contact_phone: primary.phone || "",
+        contact_tg: primary.telegram || "",
+        contacts: list,
+      });
     }
 
     if (await handleEmployerReferralAndLimitsRpc(db, method, req, body, res)) return;

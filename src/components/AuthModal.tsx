@@ -18,7 +18,7 @@ import { dbClient } from "@/lib/dbClient";
 import { readCachedEmployerPublicIdForUser, resolveProfilePathForUser } from "@/lib/links";
 import Mascot from "./Mascot";
 import { X, Gift, Mail, Lock, User, Phone, Eye, EyeOff, Loader2, CheckCircle2 } from "lucide-react";
-import OfferConsent from "./OfferConsent";
+import LegalConsentBlock from "./legal/LegalConsentBlock";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -101,7 +101,7 @@ export default function AuthModal({ isOpen, onClose, intent = "employer", initia
   };
 
   const handleGoogle = async () => {
-    if (!offerOk) { setErrorText("Для регистрации необходимо согласие с публичной офертой."); return; }
+    if (!offerOk) { setErrorText("Для регистрации необходимо согласие с правовыми документами платформы."); return; }
     resetErrors(); setIsLoading(true);
     try {
       try { localStorage.setItem("rr_offer_accepted", "1"); } catch { /* ignore */ }
@@ -132,7 +132,7 @@ export default function AuthModal({ isOpen, onClose, intent = "employer", initia
     if (!PHONE_RE.test(phone.trim())) return "Введите корректный номер телефона";
     if (pw.length < 8) return "Пароль должен быть не короче 8 символов";
     if (pw !== pw2) return "Пароли не совпадают";
-    if (!offerOk) return "Для регистрации необходимо согласие с публичной офертой";
+    if (!offerOk) return "Для регистрации необходимо согласие с правовыми документами платформы";
     return null;
   };
 
@@ -417,7 +417,7 @@ export default function AuthModal({ isOpen, onClose, intent = "employer", initia
         </div>
 
         {mode === "register" && (
-          <OfferConsent checked={offerOk} onChange={setOfferOk} context="register" />
+          <LegalConsentBlock mode="employer" checked={offerOk} onChange={setOfferOk} context="register" />
         )}
 
         {mode === "login" && (

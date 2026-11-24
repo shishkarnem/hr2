@@ -177,7 +177,8 @@ export async function reconcileAllCandidateCrmStatuses(): Promise<ReconcileResul
 
       const allInterviewStagesDone = Boolean(hasResumeScore && (hasCheckScore || hasCheckAnswers) && (hasSitScore || hasSitAnswers));
       const finalScore = Number(c.overall_score ?? sc.overall_score ?? sc.interview_score ?? c.interview_score ?? c.score ?? 0);
-      const isInterviewRejected = allInterviewStagesDone && (finalScore < passScore || c.crm_stage === "interview_reject");
+      const hasTrainingPassOrCharge = passedStages.length > 0 || c.training_charged_at != null;
+      const isInterviewRejected = allInterviewStagesDone && finalScore < passScore && !hasTrainingPassOrCharge;
       const isCertified =
         c.crm_stage === "certified" ||
         c.current_stage === "certified" ||
@@ -230,7 +231,7 @@ export async function reconcileAllCandidateCrmStatuses(): Promise<ReconcileResul
         });
       }
 
-      if (c.crm_stage_manual === "0.0" || c.crm_stage_manual === "0") {
+      if (c.crm_stage_manual === "0.0") {
         await db.run(`UPDATE candidates SET crm_stage_manual = 0 WHERE id = ?`, [c.id]);
       }
     }

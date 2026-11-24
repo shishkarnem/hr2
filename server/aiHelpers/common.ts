@@ -147,6 +147,51 @@ export async function persistCandidateAfterSituations(params: {
        updated_at = NOW()`,
     [targetId, avgScore, Math.round(avgScore / 10), overallScore, JSON.stringify(resultPayload), JSON.stringify(resultPayload)]
   );
+
+  try {
+    const { dispatchUserNotification } = await import("../services/push/pushService");
+    const { notifyEmployerInterviewStage, notifyEmployerInterviewResult } = await import(
+      "../services/notifications/interviewStageNotifier"
+    );
+    const candPub = curCand?.public_id || curCand?.id || targetId;
+    const passed = overallScore >= passScore;
+
+    // Candidate notification (interview_result)
+    await dispatchUserNotification(db, {
+      ownerType: "candidate",
+      ownerIds: [String(targetId), String(candPub)],
+      eventKey: "interview_result",
+      kind: "interview",
+      title: passed ? "ИИ-собеседование пройдено!" : "Итоги ИИ-собеседования",
+      body: passed
+        ? `Поздравляем! Ваш результат: ${overallScore} из 100 баллов. Вам открыто корпоративное обучение.`
+        : `Ваш итоговый результат: ${overallScore} из 100 баллов (проходной: ${passScore}).`,
+      link: `/cand${candPub}/profile`,
+      meta: { candidate_id: String(candPub), overall_score: overallScore, passed },
+      candidateId: String(targetId),
+    });
+
+    // Employer stage alert: Ситуации
+    await notifyEmployerInterviewStage(db, {
+      projectId: effPid,
+      projRow,
+      candidate: { ...curCand, id: targetId, public_id: candPub },
+      stageName: "Ситуации",
+      score: avgScore,
+    });
+
+    // Employer final interview result alert: interview_success or interview_reject
+    await notifyEmployerInterviewResult(db, {
+      projectId: effPid,
+      projRow,
+      candidate: { ...curCand, id: targetId, public_id: candPub },
+      overallScore,
+      passScore,
+      passed,
+    });
+  } catch (notifErr: any) {
+    console.warn("[persistCandidateAfterSituations] Notification notice:", notifErr?.message);
+  }
 }
 
 export async function persistCandidateAfterChecklist(params: {
@@ -176,7 +221,7 @@ export async function persistCandidateAfterChecklist(params: {
   const nextCrmStage = isManualStage ? (curCand?.crm_stage || "situations") : (score100 > 0 ? "situations" : "checklist");
   await db.run(
     `UPDATE candidates SET checklist_score = ?, overall_score = ?, score = ?, checklist_ai_feedback = ?, crm_stage = ?, stage = ?, current_stage = ?, updated_at = NOW() WHERE id = ?`,
-    [score100, effOverall, effOverall, JSON.stringify(feedbackPayload), nextCrmStage, nextCrmStage, nextCrmStage, targetId]
+    [score100, effOverall, Math.round(effOverall), JSON.stringify(feedbackPayload), nextCrmStage, nextCrmStage, nextCrmStage, targetId]
   );
   const effPid = projRow?.id || String(pid || curCand?.project_id || "default");
   const ansStr = JSON.stringify(ansObj || {});
@@ -225,6 +270,17 @@ export async function persistCandidateAfterChecklist(params: {
       ]
     );
   }
+
+  try {
+    const { notifyEmployerInterviewStage } = await import("../services/notifications/interviewStageNotifier");
+    await notifyEmployerInterviewStage(db, {
+      projectId: effPid,
+      projRow,
+      candidate: { ...curCand, id: targetId },
+      stageName: "Чек-лист",
+      score: score100,
+    });
+  } catch {}
 }
 
 export async function persistCandidateAfterResume(params: {
@@ -292,11 +348,11 @@ export async function persistCandidateAfterResume(params: {
   };
   await saveCandidateToProTalkDB(db, updatedCand);
   await db.run(
-    `UPDATE candidates SET resume_score = ?, overall_score = ?, score = ?, resume_ai_feedback = ?, resume_url = ?, standard_fields_json = ?, custom_fields_json = ?, interview_charged_at = COALESCE(interview_charged_at, NOW()), crm_stage = ?, stage = ?, current_stage = ?, updated_at = NOW() WHERE id = ?`,
+    `UPDATE candidates SET resume_score = ?, overall_score = ?, score = ?, resume_ai_feedback = ?, resume_url = ?, standard_fields_json = ?, custom_fields_json = ?, interview_charged_at = COALESCE(NULLIF(interview_charged_at, ''), CAST(NOW() AS TEXT)), crm_stage = ?, stage = ?, current_stage = ?, updated_at = NOW() WHERE id = ?`,
     [
       score,
       effOverall,
-      effOverall,
+      Math.round(effOverall),
       JSON.stringify(resultPayload),
       resolvedResumeUrl || existingCand.resume_url || "",
       JSON.stringify(finalMerged.standard_fields),
@@ -319,6 +375,22 @@ export async function persistCandidateAfterResume(params: {
        updated_at = NOW()`,
     [existingCand.id, score, effOverall, JSON.stringify(resultPayload), JSON.stringify(resultPayload), summary.slice(0, 1500)]
   );
+
+  try {
+    const { notifyEmployerInterviewStage } = await import("../services/notifications/interviewStageNotifier");
+    await notifyEmployerInterviewStage(db, {
+      projectId: String(effProjId || pid || ""),
+      projRow,
+      candidate: updatedCand,
+      stageName: "Скрининг резюме",
+      score,
+    });
+    if (!alreadyChargedInterview && effProjId) {
+      const { checkVacancyLowLimits } = await import("../services/notifications/lowBalanceNotifier");
+      await checkVacancyLowLimits(db, String(effProjId));
+    }
+  } catch {}
+
   return { finalMerged };
 }
 

@@ -37,6 +37,19 @@ try {
   console.info('[rr_build]', { build_id: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown' });
 } catch { /* ignore */ }
 
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .catch(() => { /* silently ignore in restricted iframe/http contexts */ });
+  });
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event?.data?.type === 'RR_PUSH_RECEIVED') {
+      window.dispatchEvent(new CustomEvent('notifications-refresh'));
+    }
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

@@ -43,6 +43,27 @@ function mapProjectRow(
   const resolvedSlug =
     r.slug || dataJson.slug || transliterateToSlug(resolvedRoleName) || `vac${resolvedPublicId}`;
   const resolvedEmployerId = r.employer_id || dataJson.employer_id || dataJson.employerId || "";
+  const parseArr = (raw: any): string[] => {
+    if (Array.isArray(raw)) return raw.map((x) => String(x || "").trim()).filter(Boolean);
+    if (typeof raw === "string" && raw.trim()) {
+      try {
+        const p = JSON.parse(raw);
+        if (Array.isArray(p)) return p.map((x) => String(x || "").trim()).filter(Boolean);
+      } catch {
+        return raw.split(/[,\s;]+/).map((x) => x.trim()).filter(Boolean);
+      }
+    }
+    return [];
+  };
+  const rawListFromRow = parseArr(r.responsible_employer_ids || dataJson.responsible_employer_ids || dataJson.responsibleEmployerIds);
+  const singleResp = String(r.responsible_employer_id || dataJson.responsible_employer_id || dataJson.responsibleEmployerId || "").trim();
+  const resolvedResponsibleEmployerIds = Array.from(
+    new Set([...rawListFromRow, ...(singleResp ? [singleResp] : [])].filter(Boolean))
+  );
+  if (resolvedResponsibleEmployerIds.length === 0 && resolvedEmployerId) {
+    resolvedResponsibleEmployerIds.push(String(resolvedEmployerId));
+  }
+  const resolvedResponsibleEmployerId = resolvedResponsibleEmployerIds[0] || resolvedEmployerId || "";
 
   const candidateFieldsConfig = parseVacancyCandidateFieldsConfig(
     r.candidate_fields_config || dataJson.candidate_fields_config || dataJson.candidateFieldsConfig
@@ -110,6 +131,10 @@ function mapProjectRow(
     companyPublicId: resolvedCompanyPublicId,
     employer_id: resolvedEmployerId,
     employerId: resolvedEmployerId,
+    responsible_employer_id: resolvedResponsibleEmployerId,
+    responsibleEmployerId: resolvedResponsibleEmployerId,
+    responsible_employer_ids: resolvedResponsibleEmployerIds,
+    responsibleEmployerIds: resolvedResponsibleEmployerIds,
     interview_limit: iLimit,
     interviewLimit: iLimit,
     training_limit: tLimit,
@@ -158,7 +183,7 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
       const cleanCompParam = rawCompParam.replace(/^comp-?/i, "").trim();
 
       let query = `
-        SELECT p.id, p.public_id, p.legacy_public_id, p.employer_id, p.employer_public_id,
+        SELECT p.id, p.public_id, p.legacy_public_id, p.employer_id, p.responsible_employer_id, p.responsible_employer_ids, p.employer_public_id,
                p.company_id, p.company_public_id, p.company_name, p.company_slug,
                p.slug, p.role_slug, p.legacy_slug, p.role_name,
                p.salary_terms, p.schedule_terms, p.motivation_text, p.motivation_text_detail,
@@ -242,13 +267,19 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
         }
 
         const compIdsArray = Array.from(candidateCompIds);
+        const respIdsLikeSql = empIdsArray.map(() => "COALESCE(p.responsible_employer_ids, '') LIKE ?").join(" OR ");
+        const respIdsLikeParams = empIdsArray.map((eid) => `%${eid}%`);
         if (compIdsArray.length > 0) {
           const compPlaceholders = compIdsArray.map(() => "?").join(",");
-          whereClauses.push(`(p.employer_id IN (${empPlaceholders}) OR p.company_id IN (${compPlaceholders}))`);
-          queryParams.push(...empIdsArray, ...compIdsArray);
+          whereClauses.push(
+            `(p.employer_id IN (${empPlaceholders}) OR p.responsible_employer_id IN (${empPlaceholders}) OR ${respIdsLikeSql} OR p.company_id IN (${compPlaceholders}))`
+          );
+          queryParams.push(...empIdsArray, ...empIdsArray, ...respIdsLikeParams, ...compIdsArray);
         } else {
-          whereClauses.push(`p.employer_id IN (${empPlaceholders})`);
-          queryParams.push(...empIdsArray);
+          whereClauses.push(
+            `(p.employer_id IN (${empPlaceholders}) OR p.responsible_employer_id IN (${empPlaceholders}) OR ${respIdsLikeSql})`
+          );
+          queryParams.push(...empIdsArray, ...empIdsArray, ...respIdsLikeParams);
         }
       } else {
         whereClauses.push(
@@ -439,6 +470,12 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
             String(pid),
           ]
         );
+        if (effRole) {
+          await db.run(
+            `UPDATE candidates SET role_name = ?, updated_at = NOW() WHERE (project_id = ? OR project_id = ?) AND COALESCE(role_name, '') != ?`,
+            [effRole, existing.id, String(existing.public_id || ""), effRole]
+          ).catch(() => {});
+        }
       }
 
       return res.json({
@@ -571,6 +608,10 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
           } catch {}
 
           spentAmount = 500;
+          try {
+            const { checkEmployerLowBalanceRR } = await import("../../services/notifications/lowBalanceNotifier");
+            await checkEmployerLowBalanceRR(db, employer.id, userBalance);
+          } catch {}
         } else {
           return res.status(400).json({
             success: false,
@@ -598,6 +639,10 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
         legacy_public_id: null,
         employerId: employer ? employer.id : requestedEmp,
         employer_id: employer ? employer.id : requestedEmp,
+        responsibleEmployerId: employer ? employer.id : requestedEmp,
+        responsible_employer_id: employer ? employer.id : requestedEmp,
+        responsibleEmployerIds: (employer ? employer.id : requestedEmp) ? [String(employer ? employer.id : requestedEmp)] : [],
+        responsible_employer_ids: (employer ? employer.id : requestedEmp) ? [String(employer ? employer.id : requestedEmp)] : [],
         company_id: linkedCompany ? linkedCompany.id : companyId,
         companyId: linkedCompany ? linkedCompany.id : companyId,
         company_name: resolvedCompanyName,
@@ -718,9 +763,10 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
       const tBlocksByProj = new Map<string, any[]>([[String(row.id), trainingBlocks || []]]);
       const parsed: any = mapProjectRow(row, candsByProj, iBlocksByProj, tBlocksByProj);
 
+      let compRow: any = null;
       const compId = parsed.company_id || row.company_id;
       if (compId) {
-        const compRow = await db.get(
+        compRow = await db.get(
           `SELECT * FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? OR slug = ? LIMIT 1`,
           [compId, String(compId), compId]
         );
@@ -729,6 +775,35 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
           parsed.theme_config = parsed.theme_config || compRow.theme_config || row.linked_company_theme_config;
           parsed.css = parsed.css || compRow.css || row.linked_company_css;
         }
+      }
+      const { resolveVacancyResponsibleEmployers, formatResponsibleContacts } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const resolvedResponsibles = await resolveVacancyResponsibleEmployers(db, { ...parsed, ...row });
+      const { primary, list } = formatResponsibleContacts(
+        resolvedResponsibles,
+        compRow?.name || parsed.company_name || ""
+      );
+      parsed.responsible_employer_ids = resolvedResponsibles.map((r) => String(r.public_id || r.id));
+      parsed.responsibleEmployerIds = parsed.responsible_employer_ids;
+      parsed.responsible_contacts = list;
+      if (list.length > 0) {
+        const contactObj = {
+          id: primary.id,
+          public_id: primary.public_id,
+          name: primary.name,
+          contact_name: primary.name,
+          email: primary.email,
+          contact_email: primary.email,
+          phone: primary.phone,
+          contact_phone: primary.phone,
+          telegram: primary.telegram,
+          avatar_url: primary.avatar_url,
+          roleLabel: primary.roleLabel,
+        };
+        parsed.employer = contactObj;
+        parsed.responsible_contact = contactObj;
+        parsed.employer_name = contactObj.name;
       }
       return res.json(cleanMojibakeDeep(parsed));
     } catch (e: any) {
@@ -922,6 +997,77 @@ export function registerProjectCrudRoutes(projectsRouter: Router) {
     } catch (err: any) {
       console.error("[PUT /projects/:id] Error:", err);
       return res.status(500).json({ error: err?.message || "Ошибка обновления вакансии" });
+    }
+  });
+
+  projectsRouter.put("/projects/:id/responsibles", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id || "").trim();
+      const db = await getProTalkDB();
+      const proj = await db.get(
+        "SELECT * FROM projects WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+        [id, id]
+      );
+      if (!proj) {
+        return res.status(404).json({ ok: false, error: "Вакансия не найдена" });
+      }
+
+      const rawIds = Array.isArray(req.body?.responsible_employer_ids)
+        ? req.body.responsible_employer_ids
+        : Array.isArray(req.body?.responsibleEmployerIds)
+        ? req.body.responsibleEmployerIds
+        : [];
+      const cleanList = Array.from(
+        new Set(rawIds.map((x: any) => String(x || "").trim()).filter(Boolean))
+      ) as string[];
+
+      if (cleanList.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          error: "Должен быть выбран хотя бы один ответственный за вакансию",
+        });
+      }
+
+      const primaryResp = cleanList[0];
+      const serialized = JSON.stringify(cleanList);
+
+      let dataJson: any = {};
+      try {
+        if (proj.data_json) dataJson = JSON.parse(proj.data_json);
+      } catch {}
+      dataJson.responsible_employer_id = primaryResp;
+      dataJson.responsibleEmployerId = primaryResp;
+      dataJson.responsible_employer_ids = cleanList;
+      dataJson.responsibleEmployerIds = cleanList;
+
+      await db.run(
+        `UPDATE projects
+         SET responsible_employer_id = ?,
+             responsible_employer_ids = ?,
+             data_json = ?,
+             updated_at = NOW()
+         WHERE id = ?`,
+        [primaryResp, serialized, JSON.stringify(dataJson), proj.id]
+      );
+
+      const { resolveVacancyResponsibleEmployers, formatResponsibleContacts } = await import(
+        "../../services/notifications/vacancyResponsiblesResolver"
+      );
+      const updatedProj = await db.get("SELECT * FROM projects WHERE id = ? LIMIT 1", [proj.id]);
+      const resolved = await resolveVacancyResponsibleEmployers(db, updatedProj || { ...proj, responsible_employer_id: primaryResp, responsible_employer_ids: serialized });
+      const { list } = formatResponsibleContacts(resolved, proj.company_name || "");
+
+      invalidatePublicVacanciesCache();
+      return res.json({
+        ok: true,
+        id: proj.id,
+        responsible_employer_id: primaryResp,
+        responsible_employer_ids: cleanList,
+        responsible_contacts: list,
+      });
+    } catch (err: any) {
+      console.error("[PUT /projects/:id/responsibles] Error:", err);
+      return res.status(500).json({ ok: false, error: err?.message || "Ошибка обновления ответственных" });
     }
   });
 }

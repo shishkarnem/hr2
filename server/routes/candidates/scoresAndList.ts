@@ -237,7 +237,7 @@ scoresAndListRouter.get(["/candidates", "/candidate"], async (req: Request, res:
         companyId: effectiveCompanyId,
         companyName: comp?.name || proj?.company_name || c.company_name || "",
         projectId: c.project_id,
-        roleName: c.role_name || proj?.role_name || "",
+        roleName: String(proj?.role_name || c.role_name || "").trim(),
         name:
           c.full_name ||
           stdFields.full_name ||
@@ -247,7 +247,8 @@ scoresAndListRouter.get(["/candidates", "/candidate"], async (req: Request, res:
         publicId: c.public_id,
         currentStage: c.current_stage || "terms",
         crmStage: c.crm_stage || "new",
-        registeredVia: c.registered_via || "telegram",
+        registeredVia: c.registered_via || "email",
+        registered_via: c.registered_via || "email",
         avatarUrl: c.avatar_url || "",
         resumeUrl: c.resume_url || stdFields.resume_url || "",
         socialTelegram: c.social_telegram || stdFields.social_telegram || "",

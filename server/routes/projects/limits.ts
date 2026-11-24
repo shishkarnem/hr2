@@ -48,12 +48,32 @@ async function handleReallocateLimits(req: Request, res: Response) {
     }
 
     let emp: any = null;
-    const empTarget = employerIdParam || proj.employer_id;
-    if (empTarget) {
-      const cleanTarget = String(empTarget).replace(/^emp-?/i, "").trim();
+    if (employerIdParam) {
+      const cleanTarget = String(employerIdParam).replace(/^emp-?/i, "").trim();
       emp = await db.get(
         "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
-        [empTarget, String(empTarget), cleanTarget, `emp-${cleanTarget}`]
+        [employerIdParam, String(employerIdParam), cleanTarget, `emp-${cleanTarget}`]
+      );
+    }
+    if (!emp && proj.company_id) {
+      const comp = await db.get(
+        "SELECT owner_employer_id, employer_id FROM companies WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+        [proj.company_id, String(proj.company_id)]
+      );
+      const ownerTarget = comp?.owner_employer_id || comp?.employer_id;
+      if (ownerTarget) {
+        const cleanOwner = String(ownerTarget).replace(/^emp-?/i, "").trim();
+        emp = await db.get(
+          "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+          [ownerTarget, String(ownerTarget), cleanOwner, `emp-${cleanOwner}`]
+        );
+      }
+    }
+    if (!emp && proj.employer_id) {
+      const cleanTarget = String(proj.employer_id).replace(/^emp-?/i, "").trim();
+      emp = await db.get(
+        "SELECT * FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? OR id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+        [proj.employer_id, String(proj.employer_id), cleanTarget, `emp-${cleanTarget}`]
       );
     }
     if (!emp) {
@@ -111,6 +131,18 @@ async function handleReallocateLimits(req: Request, res: Response) {
     );
 
     const updatedProj = await db.get("SELECT * FROM projects WHERE id = ?", [proj.id]);
+
+    try {
+      const { checkEmployerLowGeneralLimits, checkVacancyLowLimits } = await import(
+        "../../services/notifications/lowBalanceNotifier"
+      );
+      const prevPoolTotal = empInterviewCredits + empTrainingCredits;
+      const prevVacRem =
+        (curInterviewLimit > 0 ? Math.max(0, curInterviewLimit - interviewUsed) : 0) +
+        (curTrainingLimit > 0 ? Math.max(0, curTrainingLimit - trainingUsed) : 0);
+      await checkEmployerLowGeneralLimits(db, emp.id, prevPoolTotal);
+      await checkVacancyLowLimits(db, proj.id, emp.id, prevVacRem);
+    } catch {}
 
     return res.json({
       ok: true,
@@ -220,6 +252,11 @@ async function handleBuyLimits(req: Request, res: Response) {
 
     await recalculateEmployerBalances(db, emp.id);
     const updatedProj = await db.get("SELECT * FROM projects WHERE id = ?", [proj.id]);
+
+    try {
+      const { checkEmployerLowBalanceRR } = await import("../../services/notifications/lowBalanceNotifier");
+      await checkEmployerLowBalanceRR(db, emp.id, currentBalance);
+    } catch {}
 
     return res.json({
       ok: true,

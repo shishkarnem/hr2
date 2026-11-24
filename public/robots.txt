@@ -6,4 +6,5 @@ Disallow: /candidate
 Disallow: /setup
 Disallow: /payment/
 
-Sitemap: https://hr-rr.online/sitemap.xml
+Sitemap: https://hr-rr.ru/sitemap.xml
+Host: https://hr-rr.ru

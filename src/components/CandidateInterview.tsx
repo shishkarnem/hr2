@@ -1077,8 +1077,9 @@ export default function CandidateInterview({ projectId, candidateId, onCompleted
           } catch {}
         } catch {}
       }
+      try { await refetchCandidateScores(); } catch { /* ignore */ }
       setStage("done");
-      try { onCompleted?.(passed, overall); } catch { /* ignore */ }
+      try { void onRefresh?.(); } catch { /* ignore */ }
       situationsPendingRef.current?.(true);
       situationsPendingRef.current = null;
     },
@@ -1123,8 +1124,6 @@ export default function CandidateInterview({ projectId, candidateId, onCompleted
           void situationsJob.start({ kind: "situations_grade", answers: sitAnswers });
         }),
       });
-      await refetchCandidateScores();
-      setStage("done");
     } finally { setBusy(false); }
   };
 
@@ -1608,7 +1607,6 @@ export default function CandidateInterview({ projectId, candidateId, onCompleted
                               type="button"
                               onClick={() => {
                                 setAnswers((prev) => ({ ...prev, [q.id]: opt }));
-                                shuffleQuestionOptions(q.id);
                               }}
                               className={`px-4 py-2.5 rounded-xl text-sm font-semibold border text-left flex items-center gap-2.5 transition cursor-pointer ${
                                 selected
@@ -1642,7 +1640,6 @@ export default function CandidateInterview({ projectId, candidateId, onCompleted
                                     ? selectedMulti.filter((x) => x !== opt)
                                     : [...selectedMulti, opt];
                                   setAnswers((prev) => ({ ...prev, [q.id]: next }));
-                                  shuffleQuestionOptions(q.id);
                                 }}
                                 className={`px-4 py-2.5 rounded-xl text-sm font-semibold border text-left flex items-center gap-2.5 transition cursor-pointer ${
                                   checked
