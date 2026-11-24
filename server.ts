@@ -40,6 +40,7 @@ import {
   resolveStaticRoots,
   registerPwaAssetRoutes,
   registerPublicStaticFallback,
+  setStaticAssetHeaders,
 } from "./server/services/pwa/staticAssets";
 
 export { db };
@@ -771,17 +772,17 @@ async function startServer() {
         express.static(distAssetsPath, {
           maxAge: "365d",
           immutable: true,
+          setHeaders: (res, filePath) => setStaticAssetHeaders(res, filePath),
         })
       );
     }
+    app.use("/assets/*", (_req, res) => {
+      res.status(404).type("text/plain; charset=utf-8").send("Asset not found");
+    });
     app.use(
       express.static(distPath, {
         index: false,
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith("version.json") || filePath.endsWith(".html")) {
-            res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-          }
-        },
+        setHeaders: (res, filePath) => setStaticAssetHeaders(res, filePath),
       })
     );
     registerPublicStaticFallback(app, staticRoots);

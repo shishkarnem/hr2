@@ -3,7 +3,12 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import express from "express";
 import type { Server } from "http";
 import { PWA_ICON_FALLBACKS } from "./pwaIconsFallback";
-import { registerPwaAssetRoutes, type StaticRoots } from "./staticAssets";
+import {
+  registerPwaAssetRoutes,
+  isBuiltDistDir,
+  setStaticAssetHeaders,
+  type StaticRoots,
+} from "./staticAssets";
 
 describe("PWA static assets & embedded icon fallbacks", () => {
   let server: Server;
@@ -79,5 +84,27 @@ describe("PWA static assets & embedded icon fallbacks", () => {
 
     const resFav = await fetch(`${baseUrl}/favicon.ico`);
     expect(resFav.status).toBe(200);
+  });
+
+  it("never treats the source root containing /src/main.tsx as a built dist directory", () => {
+    expect(isBuiltDistDir(process.cwd())).toBe(false);
+  });
+
+  it("sets strict module-compatible MIME types for .js, .mjs, and .wasm assets", () => {
+    const headers: Record<string, string> = {};
+    const fakeRes = {
+      setHeader(k: string, v: string) {
+        headers[k.toLowerCase()] = v;
+      },
+    } as any;
+
+    setStaticAssetHeaders(fakeRes, "/app/dist/assets/index-123.js");
+    expect(headers["content-type"]).toBe("application/javascript; charset=utf-8");
+
+    setStaticAssetHeaders(fakeRes, "/app/dist/assets/pdf.worker.min.mjs");
+    expect(headers["content-type"]).toBe("application/javascript; charset=utf-8");
+
+    setStaticAssetHeaders(fakeRes, "/app/dist/assets/module.wasm");
+    expect(headers["content-type"]).toBe("application/wasm");
   });
 });

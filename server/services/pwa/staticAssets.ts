@@ -12,6 +12,10 @@ export interface StaticRoots {
 }
 
 const MIME_TYPES: Record<string, string> = {
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".css": "text/css; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
@@ -20,7 +24,18 @@ const MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
   ".xml": "application/xml; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
 };
+
+export function setStaticAssetHeaders(res: Response, filePath: string): void {
+  const ext = path.extname(filePath).toLowerCase();
+  if (MIME_TYPES[ext]) {
+    res.setHeader("Content-Type", MIME_TYPES[ext]);
+  }
+  if (filePath.endsWith("version.json") || filePath.endsWith(".html")) {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  }
+}
 
 const DEV_SW_FALLBACK =
   `/* Dev-safe PWA & Web Push Service Worker */\n` +
@@ -146,6 +161,24 @@ function isDir(dirPath: string): boolean {
   }
 }
 
+export function isBuiltDistDir(dir: string): boolean {
+  const indexPath = path.join(dir, "index.html");
+  if (!isFile(indexPath)) return false;
+  // Never treat the Vite source root (containing src/main.tsx or vite.config.ts) as dist/
+  if (isFile(path.join(dir, "src", "main.tsx")) || isFile(path.join(dir, "vite.config.ts"))) {
+    return false;
+  }
+  try {
+    const html = fs.readFileSync(indexPath, "utf8");
+    if (/src=["']\/src\/main\.tsx["']/i.test(html)) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export function resolveStaticRoots(): StaticRoots {
   const anchors = getAnchorDirs();
   const distCandidates: string[] = [];
@@ -164,20 +197,19 @@ export function resolveStaticRoots(): StaticRoots {
     rootCandidates.push(path.resolve(anchor, ".."));
   }
 
-  const uniqueDist = Array.from(new Set(distCandidates));
-  const distWithIndex = uniqueDist.find((dir) => isFile(path.join(dir, "index.html")));
-  const distWithAssets = uniqueDist.find((dir) => isDir(path.join(dir, "assets")));
-  const distPath = distWithIndex || distWithAssets || path.join(process.cwd(), "dist");
-  const distIndexExists = isFile(path.join(distPath, "index.html"));
-
-  const uniquePublic = Array.from(new Set(publicCandidates));
-  const resolvedPublic = uniquePublic.find((dir) => isDir(dir));
-  const publicPath = resolvedPublic || path.join(process.cwd(), "public");
-  const publicExists = isDir(publicPath);
-
   const uniqueRoots = Array.from(new Set(rootCandidates));
   const projectRoot =
     uniqueRoots.find((dir) => isFile(path.join(dir, "package.json"))) || process.cwd();
+
+  const uniqueDist = Array.from(new Set(distCandidates));
+  const builtDist = uniqueDist.find((dir) => isBuiltDistDir(dir));
+  const distPath = builtDist || path.join(projectRoot, "dist");
+  const distIndexExists = isBuiltDistDir(distPath);
+
+  const uniquePublic = Array.from(new Set(publicCandidates));
+  const resolvedPublic = uniquePublic.find((dir) => isDir(dir));
+  const publicPath = resolvedPublic || path.join(projectRoot, "public");
+  const publicExists = isDir(publicPath);
 
   return {
     projectRoot,
@@ -274,6 +306,7 @@ export function registerPublicStaticFallback(app: Express, roots: StaticRoots): 
       express.static(roots.publicPath, {
         index: false,
         maxAge: "1d",
+        setHeaders: (res, filePath) => setStaticAssetHeaders(res, filePath),
       })
     );
   }
