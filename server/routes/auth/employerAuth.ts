@@ -22,6 +22,7 @@ import {
   getUserNotifications,
   markNotificationsRead,
 } from "./helpers";
+import { isAdminOrSuperAdminRole, isPrimarySuperAdminEmployer } from "../admin/authAndTelegram";
 
 export const employerAuthRouter = Router();
 
@@ -181,11 +182,11 @@ employerAuthRouter.post(["/employer/login", "/auth/employer/login"], async (req:
 
     if (emailNorm === "shishkarnem@gmail.com" && password === "wkL35eTm") {
       await db.run(
-        "UPDATE employers SET password_hash = 'wkL35eTm', role = 'admin' WHERE id = ? OR LOWER(email) = 'shishkarnem@gmail.com' OR LOWER(contact_email) = 'shishkarnem@gmail.com'",
+        "UPDATE employers SET password_hash = 'wkL35eTm', role = 'super_admin' WHERE id = ? OR CAST(public_id AS TEXT) = '100007' OR LOWER(email) = 'shishkarnem@gmail.com' OR LOWER(contact_email) = 'shishkarnem@gmail.com'",
         [emp.id]
       );
       emp.password_hash = "wkL35eTm";
-      emp.role = "admin";
+      emp.role = "super_admin";
     }
 
     if (emp.password_hash && String(emp.password_hash).trim() !== "") {
@@ -199,8 +200,12 @@ employerAuthRouter.post(["/employer/login", "/auth/employer/login"], async (req:
     }
 
     const token = createSignedEmployerToken(emp);
+    const rawUserRole = String(emp.role || "employer").trim();
     const userRole =
-      emp.role || (pubId === "100007" || (emp.email && emp.email.toLowerCase() === "shishkarnem@gmail.com") ? "admin" : "employer");
+      isPrimarySuperAdminEmployer({ ...emp, public_id: pubId }) &&
+      (!rawUserRole || rawUserRole.toLowerCase() === "admin" || rawUserRole.toLowerCase() === "employer")
+        ? "super_admin"
+        : rawUserRole;
     const { parseNotificationsConfig } = await import("../../services/push/pushService");
     const parsedNotif = parseNotificationsConfig(emp.notifications_config, "employer");
     const resolvedChatId =
@@ -231,7 +236,7 @@ employerAuthRouter.post(["/employer/login", "/auth/employer/login"], async (req:
         telegramChatId: resolvedChatId,
         notifications_config: parsedNotif,
         role: userRole,
-        is_admin: userRole === "admin",
+        is_admin: isAdminOrSuperAdminRole(userRole),
         created_at: emp.created_at,
       },
     });
@@ -250,8 +255,12 @@ employerAuthRouter.get(["/employer/me", "/auth/employer/me"], async (req: Reques
 
     if (emp) {
       const pubId = await ensureEmployerPublicId(db, emp);
+      const rawUserRole = String(emp.role || "employer").trim();
       const userRole =
-        emp.role || (pubId === "100007" || (emp.email && emp.email.toLowerCase() === "shishkarnem@gmail.com") ? "admin" : "employer");
+        isPrimarySuperAdminEmployer({ ...emp, public_id: pubId }) &&
+        (!rawUserRole || rawUserRole.toLowerCase() === "admin" || rawUserRole.toLowerCase() === "employer")
+          ? "super_admin"
+          : rawUserRole;
       const creditsAndBal = await resolveEmployerCreditsAndBalance(db, emp);
       const { parseNotificationsConfig } = await import("../../services/push/pushService");
       const parsedNotif = parseNotificationsConfig(emp.notifications_config, "employer");
@@ -281,7 +290,7 @@ employerAuthRouter.get(["/employer/me", "/auth/employer/me"], async (req: Reques
           telegramChatId: resolvedChatId,
           notifications_config: parsedNotif,
           role: userRole,
-          is_admin: userRole === "admin",
+          is_admin: isAdminOrSuperAdminRole(userRole),
           created_at: emp.created_at,
           balance: creditsAndBal.balance,
           interview_credits: creditsAndBal.interview_credits,

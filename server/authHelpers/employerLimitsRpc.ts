@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { PgDBWrapper, recalculateEmployerBalances } from "../db";
 import { notifyLimitChangesToTelegram } from "../telegram";
 import { employerSessions, genId } from "../routes/auth/helpers";
+import { isAuthorizedAdminOrSysAdmin, isAuthorizedSuperAdmin } from "../routes/admin/authAndTelegram";
+import { handleAdminPaginationRpc } from "./adminPaginationRpc";
 
 export const ALLOWED_LIMIT_COLS = new Set([
   "interview_credits",
@@ -116,13 +118,169 @@ export async function handleEmployerReferralAndLimitsRpc(
     return true;
   }
 
-  if (method === "admin_list_employers" || method === "admin_list_users") {
-    const employers = await db.all("SELECT * FROM employers ORDER BY created_at DESC");
+  if (method === "admin_list_employers") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
+    const targetEmpId = String(body?._id ?? body?.id ?? "").trim();
+    if (targetEmpId) {
+      const cleanPid = targetEmpId.replace(/^emp-?/i, "");
+      const empRow = await db.get(
+        `SELECT e.id, e.public_id, e.user_id, e.name, e.contact_name, e.email, e.contact_email, e.company_name,
+                e.phone, e.contact_phone, e.telegram_username, e.contact_telegram, e.role, e.status, e.balance,
+                e.balance_start, e.balance_pay, e.balance_referral, e.balance_admin, e.balance_limits,
+                e.landing_credits, e.interview_setup_credits, e.training_setup_credits, e.interview_credits, e.training_credits,
+                e.created_at, e.updated_at,
+                (
+                  COALESCE(e.balance_pay, 0) > 0
+                  OR EXISTS (
+                    SELECT 1 FROM wallets w JOIN transactions t ON t.wallet_id = w.id
+                    WHERE (w.employer_id = e.id OR (e.public_id IS NOT NULL AND w.employer_id = CAST(e.public_id AS TEXT)))
+                      AND LOWER(COALESCE(t.type, '')) = 'pay' AND COALESCE(t.amount_rr, 0) > 0
+                  )
+                ) AS has_topup,
+                (SELECT COUNT(DISTINCT c.id)::int FROM companies c WHERE c.owner_employer_id = e.id OR c.employer_id = e.id OR (e.public_id IS NOT NULL AND (c.owner_employer_id = CAST(e.public_id AS TEXT) OR c.employer_id = CAST(e.public_id AS TEXT)))) AS companies_count,
+                (SELECT COUNT(DISTINCT p.id)::int FROM projects p WHERE p.employer_id = e.id OR (e.public_id IS NOT NULL AND (p.employer_id = CAST(e.public_id AS TEXT) OR CAST(p.employer_public_id AS TEXT) = CAST(e.public_id AS TEXT)))) AS projects_count,
+                (SELECT COUNT(DISTINCT ca.id)::int FROM candidates ca JOIN projects p ON (ca.project_id = p.id OR (p.public_id IS NOT NULL AND ca.project_id = CAST(p.public_id AS TEXT))) WHERE p.employer_id = e.id OR (e.public_id IS NOT NULL AND (p.employer_id = CAST(e.public_id AS TEXT) OR CAST(p.employer_public_id AS TEXT) = CAST(e.public_id AS TEXT)))) AS candidates_count
+         FROM employers e
+         WHERE e.id = ? OR CAST(e.public_id AS TEXT) = ? OR e.id = ? OR CAST(e.public_id AS TEXT) = ?
+         LIMIT 1`,
+        [targetEmpId, targetEmpId, `emp-${cleanPid}`, cleanPid]
+      );
+      res.json({ data: empRow ? [empRow] : [], error: null });
+      return true;
+    }
+
+    if (body?._paginated) {
+      return await handleAdminPaginationRpc(db, "admin_list_employers_page", req, body, res);
+    }
+
+    const employers = await db.all(
+      `SELECT id, public_id, user_id, name, contact_name, email, contact_email, company_name, phone, contact_phone,
+              telegram_username, contact_telegram, role, status, balance, balance_start, balance_pay,
+              balance_referral, balance_admin, balance_limits, landing_credits, interview_setup_credits,
+              training_setup_credits, interview_credits, training_credits, created_at, updated_at
+       FROM employers ORDER BY created_at DESC NULLS LAST`
+    );
     res.json({ data: employers || [], error: null });
     return true;
   }
 
+  if (method === "admin_list_users") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
+    if (!(await isAuthorizedSuperAdmin(req))) {
+      res.status(403).json({ data: null, error: "Управление ролями доступно только супер-администраторам" });
+      return true;
+    }
+
+    if (body?._paginated) {
+      const rawLimit = Number(body?._limit ?? body?.limit ?? 20);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : 20;
+      const rawOffset = Number(body?._offset ?? body?.offset ?? 0);
+      const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+      const search = String(body?._search ?? body?.search ?? "").trim();
+
+      const whereParts: string[] = [];
+      const params: any[] = [];
+      if (search) {
+        const like = `%${search}%`;
+        whereParts.push(
+          `(COALESCE(email, '') ILIKE ? OR COALESCE(contact_email, '') ILIKE ? OR COALESCE(name, '') ILIKE ? OR COALESCE(contact_name, '') ILIKE ? OR COALESCE(company_name, '') ILIKE ? OR COALESCE(CAST(public_id AS TEXT), '') ILIKE ?)`
+        );
+        params.push(like, like, like, like, like, like);
+      }
+      const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+      const [cntRow, employers] = await Promise.all([
+        db.get(`SELECT COUNT(*)::int AS cnt FROM employers ${whereSql}`, params),
+        db.all(
+          `SELECT id, public_id, name, contact_name, company_name, email, contact_email, role, created_at
+           FROM employers ${whereSql} ORDER BY created_at DESC NULLS LAST LIMIT ? OFFSET ?`,
+          [...params, limit, offset]
+        ),
+      ]);
+
+      const total = Number(cntRow?.cnt || 0);
+      const formatted = (employers || []).map((e: any) => {
+        const r = String(e.role || "employer").trim().toLowerCase() || "employer";
+        return {
+          user_id: e.id,
+          id: e.id,
+          public_id: e.public_id,
+          display_name: e.name || e.contact_name || e.company_name || "—",
+          email: e.email || e.contact_email || "",
+          role: r,
+          roles: [r],
+          created_at: e.created_at,
+        };
+      });
+      res.json({
+        data: {
+          items: formatted,
+          total,
+          hasMore: offset + formatted.length < total,
+        },
+        error: null,
+      });
+      return true;
+    }
+
+    const employers = await db.all(
+      `SELECT id, public_id, name, contact_name, company_name, email, contact_email, role, created_at
+       FROM employers ORDER BY created_at DESC`
+    );
+    const formatted = (employers || []).map((e: any) => {
+      const r = String(e.role || "employer").trim().toLowerCase() || "employer";
+      return {
+        user_id: e.id,
+        id: e.id,
+        public_id: e.public_id,
+        display_name: e.name || e.contact_name || e.company_name || "—",
+        email: e.email || e.contact_email || "",
+        role: r,
+        roles: [r],
+        created_at: e.created_at,
+      };
+    });
+    res.json({ data: formatted, error: null });
+    return true;
+  }
+
+  if (method === "admin_set_role") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
+    if (!(await isAuthorizedSuperAdmin(req))) {
+      res.status(403).json({ data: null, error: "Изменение ролей доступно только супер-администраторам" });
+      return true;
+    }
+    const { _user, _role, _enabled } = body;
+    const targetId = String(_user || "").trim();
+    const roleNorm = String(_role || "").trim().toLowerCase();
+    const ALLOWED_ROLES = new Set(["super_admin", "admin", "moderator", "employer", "candidate"]);
+    if (!targetId || !ALLOWED_ROLES.has(roleNorm)) {
+      res.status(400).json({ data: null, error: "Некорректный пользователь или роль" });
+      return true;
+    }
+    const nextRole = _enabled === false ? "employer" : roleNorm;
+    await db.run(
+      "UPDATE employers SET role = ?, updated_at = NOW() WHERE id = ? OR CAST(public_id AS TEXT) = ?",
+      [nextRole, targetId, targetId]
+    );
+    res.json({ data: { ok: true, user_id: targetId, role: nextRole }, error: null });
+    return true;
+  }
+
   if (method === "admin_employer_set_limit") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ success: false, data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
     const { _employer, _key, _field, field, key, _value, value, _note, note } = body;
     const empIdRaw = String(_employer || body?.employer_id || body?.id || "").trim();
     const cleanPid = empIdRaw.replace(/^emp-?/, "");
@@ -182,6 +340,10 @@ export async function handleEmployerReferralAndLimitsRpc(
   }
 
   if (method === "admin_employer_set_limits") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ success: false, data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
     const { _employer, _limits, _deltas, _note, note } = body;
     const empIdRaw = String(_employer || body?.employer_id || body?.id || "").trim();
     const cleanPid = empIdRaw.replace(/^emp-?/, "");
@@ -258,6 +420,10 @@ export async function handleEmployerReferralAndLimitsRpc(
   }
 
   if (method === "admin_wallet_adjust") {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      res.status(401).json({ success: false, data: null, error: "Требуется авторизация администратора" });
+      return true;
+    }
     const { _employer, _delta, delta, note, _note, type, _type } = body;
     const empIdRaw = String(_employer || body?.employer_id || body?.id || "").trim();
     const cleanPid = empIdRaw.replace(/^emp-?/, "");

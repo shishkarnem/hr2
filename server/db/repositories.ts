@@ -37,8 +37,9 @@ export async function saveEmployerToProTalkDB(db: PgDBWrapper, emp: any) {
       emp.telegramUsername || emp.telegram_username || emp.contact_telegram || existing?.telegram_username || existing?.contact_telegram || "";
     const finalBalance = toBigInt(emp.balance ?? existing?.balance ?? 1000, 1000);
     const finalLimits = JSON.stringify(emp.limits || (existing?.limits_json ? JSON.parse(existing.limits_json) : {}));
-    const finalRole =
-      emp.role || existing?.role || (String(finalPid) === "100007" || finalEmail === "shishkarnem@gmail.com" ? "admin" : "employer");
+    const isOwner100007 = String(finalPid) === "100007" || finalEmail === "shishkarnem@gmail.com";
+    const rawRole = emp.role || existing?.role || (isOwner100007 ? "super_admin" : "employer");
+    const finalRole = isOwner100007 && String(rawRole).trim().toLowerCase() === "admin" ? "super_admin" : rawRole;
 
     if (existing) {
       await db.run(

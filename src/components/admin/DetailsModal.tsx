@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { X, Save, Trash2, Loader2 } from "lucide-react";
 import { dbClient } from "@/lib/dbClient";
 import { ConfirmRecordChangeModal, FieldChangeItem } from "./ConfirmRecordChangeModal";
@@ -49,6 +50,7 @@ export function DetailsModal({
   const [pendingChanges, setPendingChanges] = useState<FieldChangeItem[] | null>(null);
   const [preparedPatch, setPreparedPatch] = useState<Record<string, any> | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const lastIdRef = useRef<string | null>(null);
   const activeId = data ? String((data as any)[idField] ?? data?.id ?? "") : null;
@@ -84,20 +86,38 @@ export function DetailsModal({
     });
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (onDelete) {
       onDelete();
       return;
     }
     if (!table) return;
-    if (!confirm(`Удалить запись из таблицы "${table}"? Это действие необратимо.`)) return;
+    setConfirmDeleteOpen(true);
+  };
+
+  const executeDelete = async () => {
+    if (!table) return;
+    setConfirmDeleteOpen(false);
     setDeleting(true);
     setMsg(null);
     const sourceData = currentData || data;
     const idVal = (sourceData as any)[idField] ?? sourceData.id;
     try {
-      const res = await fetch(`/api/admin/tables/${encodeURIComponent(table)}/${encodeURIComponent(idVal)}`, {
+      const adminPwd = sessionStorage.getItem("sysadmin_password") || localStorage.getItem("admin_password") || "";
+      const empToken =
+        localStorage.getItem("emp_token") ||
+        localStorage.getItem("employer_auth_token") ||
+        localStorage.getItem("employer_token") ||
+        "";
+      const headers: Record<string, string> = {};
+      if (adminPwd) headers["x-admin-password"] = adminPwd;
+      if (empToken) {
+        headers["Authorization"] = `Bearer ${empToken}`;
+        headers["x-employer-token"] = empToken;
+      }
+      const res = await fetch(`/api/admin/table/${encodeURIComponent(table)}/${encodeURIComponent(idVal)}`, {
         method: "DELETE",
+        headers,
       });
       if (!res.ok) {
         const { error } = await (dbClient as any).from(table).delete().eq(idField, idVal);
@@ -219,12 +239,18 @@ export function DetailsModal({
     let updated: any = null;
 
     try {
-      const adminPwd = sessionStorage.getItem("sysadmin_password") || localStorage.getItem("admin_password") || "wkL35eTm";
-      const empToken = localStorage.getItem("employer_auth_token") || localStorage.getItem("employer_token") || "";
+      const adminPwd = sessionStorage.getItem("sysadmin_password") || localStorage.getItem("admin_password") || "";
+      const empToken =
+        localStorage.getItem("emp_token") ||
+        localStorage.getItem("employer_auth_token") ||
+        localStorage.getItem("employer_token") ||
+        "";
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        "x-admin-password": adminPwd,
       };
+      if (adminPwd) {
+        headers["x-admin-password"] = adminPwd;
+      }
       if (empToken) {
         headers["Authorization"] = `Bearer ${empToken}`;
         headers["x-employer-token"] = empToken;
@@ -265,18 +291,21 @@ export function DetailsModal({
 
   const entries = Object.entries(form).filter(([k]) => !omitSet.has(k));
 
-  return (
+  const modalContent = (
     <>
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-transparent backdrop-blur-xl p-4 animate-fade-in" onClick={onClose}>
+      <div
+        className="fixed inset-0 z-[900] flex items-center justify-center bg-[#0F2438]/75 backdrop-blur-xl p-3 sm:p-4 animate-fade-in"
+        onClick={onClose}
+      >
         <div
-          className="relative max-w-4xl w-full max-h-[88vh] overflow-auto rounded-3xl border border-white/20 shadow-2xl bg-transparent backdrop-blur-3xl text-white"
+          className="relative max-w-4xl w-full max-h-[88dvh] overflow-auto rounded-3xl border border-[#E7C768]/45 shadow-2xl bg-gradient-to-br from-[#17344F] via-[#1E4468] to-[#265582] text-white"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-transparent backdrop-blur-xl">
-            <h3 className="text-base font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent truncate">
+          <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-white/15 bg-gradient-to-r from-[#17344F] via-[#1E4468] to-[#265582]">
+            <h3 className="text-base font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent break-words min-w-0 flex-1">
               {title}
             </h3>
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
               {editable && (
                 <>
                   <button
@@ -398,8 +427,48 @@ export function DetailsModal({
           busy={saving}
         />
       )}
+
+      {confirmDeleteOpen && (
+        <div
+          className="fixed inset-0 z-[1050] flex items-center justify-center p-4 bg-[#0F2438]/75 backdrop-blur-xl"
+          onClick={() => setConfirmDeleteOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl border border-[#E7C768]/50 bg-gradient-to-br from-[#17344F] via-[#1E4468] to-[#265582] p-6 space-y-4 shadow-2xl text-white"
+          >
+            <h3 className="text-base font-bold bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] bg-clip-text text-transparent">
+              Удаление записи
+            </h3>
+            <p className="text-sm text-white leading-relaxed break-words">
+              Удалить выбранную запись из таблицы «{table}»? Это действие необратимо.
+            </p>
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteOpen(false)}
+                className="w-full sm:w-auto px-4 py-2 rounded-xl border border-white/25 text-white text-sm font-semibold hover:border-[#E7C768] cursor-pointer"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={executeDelete}
+                className="w-full sm:w-auto px-5 py-2 rounded-xl bg-gradient-to-r from-[#FFE580] via-[#E7C768] to-[#C8A038] text-[#17344F] text-sm font-bold cursor-pointer"
+              >
+                Удалить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
+
+  if (typeof document !== "undefined") {
+    return createPortal(modalContent, document.body);
+  }
+  return modalContent;
 }
 
 export default DetailsModal;

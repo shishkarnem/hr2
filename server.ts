@@ -42,6 +42,8 @@ import {
   registerPublicStaticFallback,
   setStaticAssetHeaders,
 } from "./server/services/pwa/staticAssets";
+import { initSavRssScheduler } from "./server/services/blog/savRssSync";
+import { normalizeBlogCoverImageUrl } from "./server/services/blog/blogSchema";
 
 export { db };
 
@@ -74,29 +76,6 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // Synchronize data with PostgreSQL BD ProTalk at startup
-  try {
-    const dbInstance = await getProTalkDB();
-    const loaded = await loadAllFromProTalkDB(dbInstance, db);
-    if (loaded) {
-      if (loaded.projects?.length) db.projects = loaded.projects;
-      if (loaded.candidates?.length) db.candidates = loaded.candidates;
-      if (loaded.payments?.length) db.payments = loaded.payments;
-      if (loaded.employers?.length) db.employers = loaded.employers;
-      if (loaded.companies?.length) db.companies = loaded.companies;
-      console.log(`[Express] Synchronized data with PostgreSQL BD ProTalk: ${db.projects.length} projects, ${db.companies.length} companies, ${db.employers.length} employers`);
-    }
-  } catch (err) {
-    console.error("[Express] Error synchronizing with PostgreSQL BD ProTalk at startup:", err);
-  }
-
-  // Initialize daily 06:00 MSK database backup to Telegram
-  try {
-    initBackupCronJob();
-  } catch (cronErr) {
-    console.error("[Cron] Failed initializing backup cron job:", cronErr);
-  }
-
   // Mount API Express Routers
   app.use("/api/auth", authRouter);
   app.use("/api/admin", adminRouter);
@@ -123,7 +102,9 @@ async function startServer() {
     try {
       const siteUrl = "https://hr-rr.online";
       const dbInstance = await getProTalkDB();
-      const posts = await dbInstance.all("SELECT public_id, slug, updated_at, created_at FROM posts WHERE is_published = 1 ORDER BY created_at DESC");
+      const posts = await dbInstance.all(
+        "SELECT public_id, slug, updated_at, created_at FROM posts WHERE (is_published = 1 OR CAST(is_published AS TEXT) = '1') AND (category IS NULL OR category = 'blog' OR category = '') ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC"
+      );
 
       let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
       xml += `<urlset xmlns="http://www.sitemap.org/schemas/sitemap/0.9">\n`;
@@ -132,7 +113,8 @@ async function startServer() {
 
       for (const p of posts) {
         const lastmod = (p.updated_at || p.created_at || new Date().toISOString()).split("T")[0];
-        xml += `  <url>\n    <loc>${siteUrl}/blog/post${p.public_id}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
+        const postSeg = p.slug ? encodeURIComponent(p.slug) : `post${p.public_id}`;
+        xml += `  <url>\n    <loc>${siteUrl}/blog/${postSeg}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
       }
 
       xml += `  <url>\n    <loc>${siteUrl}/vacancy</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
@@ -209,7 +191,9 @@ async function startServer() {
     try {
       const siteUrl = "https://hr-rr.online";
       const dbInstance = await getProTalkDB();
-      const posts = await dbInstance.all("SELECT public_id, title, excerpt FROM posts WHERE is_published = 1 ORDER BY created_at DESC");
+      const posts = await dbInstance.all(
+        "SELECT public_id, slug, title, excerpt FROM posts WHERE (is_published = 1 OR CAST(is_published AS TEXT) = '1') AND (category IS NULL OR category = 'blog' OR category = '') ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC LIMIT 50"
+      );
       const faqItems = await dbInstance.all("SELECT question, answer, category FROM faq_items WHERE is_published = 1 ORDER BY sort_order ASC");
 
       let txt = `# Платформа «Робот Рекрутер» (hr-rr.online)\n\n`;
@@ -222,7 +206,8 @@ async function startServer() {
       txt += `- [ИИ-Академия](${siteUrl}/academy): Обучающие материалы, инструкции по автонайму и онбордингу.\n\n`;
       txt += `## Экспертные публикации блога:\n`;
       for (const p of posts) {
-        txt += `- [${p.title}](${siteUrl}/blog/post${p.public_id}): ${p.excerpt || "Подробное практическое руководство по автоматизации подбора персонала."}\n`;
+        const postSeg = p.slug ? encodeURIComponent(p.slug) : `post${p.public_id}`;
+        txt += `- [${p.title}](${siteUrl}/blog/${postSeg}): ${p.excerpt || "Подробное практическое руководство по автоматизации подбора персонала."}\n`;
       }
       if (faqItems && faqItems.length > 0) {
         txt += `\n## База знаний и частые вопросы (FAQ):\n`;
@@ -242,13 +227,16 @@ async function startServer() {
     try {
       const siteUrl = "https://hr-rr.online";
       const dbInstance = await getProTalkDB();
-      const posts = await dbInstance.all("SELECT public_id, title, excerpt, content_md, created_at FROM posts WHERE is_published = 1 ORDER BY created_at DESC");
+      const posts = await dbInstance.all(
+        "SELECT public_id, slug, title, excerpt, content_md, created_at FROM posts WHERE (is_published = 1 OR CAST(is_published AS TEXT) = '1') AND (category IS NULL OR category = 'blog' OR category = '') ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC LIMIT 50"
+      );
       const faqItems = await dbInstance.all("SELECT question, answer, category FROM faq_items WHERE is_published = 1 ORDER BY sort_order ASC");
 
       let txt = `# Полный контекст блога и базы знаний «Робот Рекрутер» (hr-rr.online)\n\n`;
       txt += `Файл содержит полный машиночитаемый текст статей и базы знаний для прямого цитирования и ответа нейросетями (Perplexity, SearchGPT, Gemini, ChatGPT, Claude).\n\n`;
       for (const p of posts) {
-        txt += `---\n\n# ${p.title}\nURL: ${siteUrl}/blog/post${p.public_id}\nДата публикации: ${p.created_at}\n\n${p.content_md}\n\n`;
+        const postSeg = p.slug ? encodeURIComponent(p.slug) : `post${p.public_id}`;
+        txt += `---\n\n# ${p.title}\nURL: ${siteUrl}/blog/${postSeg}\nДата публикации: ${p.created_at}\n\n${p.content_md}\n\n`;
       }
       if (faqItems && faqItems.length > 0) {
         txt += `---\n\n# Официальная база знаний и ответы на частые вопросы (FAQ)\n\n`;
@@ -268,7 +256,9 @@ async function startServer() {
     try {
       const siteUrl = "https://hr-rr.online";
       const dbInstance = await getProTalkDB();
-      const posts = await dbInstance.all("SELECT public_id, title, excerpt, content_md, created_at FROM posts WHERE is_published = 1 ORDER BY created_at DESC LIMIT 30");
+      const posts = await dbInstance.all(
+        "SELECT public_id, slug, title, excerpt, content_md, created_at FROM posts WHERE (is_published = 1 OR CAST(is_published AS TEXT) = '1') AND (category IS NULL OR category = 'blog' OR category = '') ORDER BY COALESCE(is_pinned, 0) DESC, created_at DESC LIMIT 30"
+      );
 
       let rss = `<?xml version="1.0" encoding="UTF-8" ?>\n`;
       rss += `<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n`;
@@ -280,7 +270,8 @@ async function startServer() {
       rss += `  <atom:link href="${siteUrl}/rss.xml" rel="self" type="application/rss+xml" />\n`;
 
       for (const p of posts) {
-        const link = `${siteUrl}/blog/post${p.public_id}`;
+        const postSeg = p.slug ? encodeURIComponent(p.slug) : `post${p.public_id}`;
+        const link = `${siteUrl}/blog/${postSeg}`;
         rss += `  <item>\n`;
         rss += `    <title><![CDATA[${p.title}]]></title>\n`;
         rss += `    <link>${link}</link>\n`;
@@ -398,30 +389,31 @@ async function startServer() {
           `;
         }
       }
-      // 2. Blog posts (/blog/:id, /blog/post:id, /posts/:id)
+      // 2. Blog posts (/blog/:id, /blog/post:id, /blog/:slug, /posts/:id)
       else if (cleanPath.startsWith("/blog") || cleanPath.startsWith("/posts")) {
         const parts = cleanPath.split("/").filter(Boolean);
         const rawSlugOrId = parts[1] || "";
-        const cleanId = rawSlugOrId.replace(/^post/, "");
+        const cleanId = /^post\d+$/i.test(rawSlugOrId) ? rawSlugOrId.replace(/^post/i, "") : rawSlugOrId;
 
-        if (cleanId) {
+        if (rawSlugOrId) {
           const post = await dbInstance.get(
-            "SELECT title, excerpt, content_md, cover_url, created_at, updated_at, public_id FROM posts WHERE public_id = ? OR id = ? OR slug = ?",
-            [cleanId, cleanId, cleanId]
+            "SELECT title, seo_title, excerpt, seo_description, seo_keywords, content_md, cover_url, cover_image_url, created_at, updated_at, public_id, slug FROM posts WHERE CAST(public_id AS TEXT) = ? OR id = ? OR slug = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+            [rawSlugOrId, rawSlugOrId, rawSlugOrId, cleanId]
           );
 
           if (post) {
-            title = `${post.title} — Блог Робот Рекрутер`;
-            const cleanExcerpt = post.excerpt || (post.content_md || "").replace(/[#*`>_\-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+            title = `${post.seo_title || post.title} — Блог Робот Рекрутер`;
+            const cleanExcerpt = post.seo_description || post.excerpt || (post.content_md || "").replace(/[#*`>_\-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
             description = cleanExcerpt || `${post.title} — экспертный гайд в блоге Робот Рекрутер.`;
-            keywords = `${post.title}, подбор персонала, ИИ найм, рекрутинг, Робот Рекрутер`;
+            keywords = post.seo_keywords || `${post.title}, подбор персонала, ИИ найм, рекрутинг, Робот Рекрутер`;
 
-            if (post.cover_url) {
-              image = post.cover_url.startsWith("http") ? post.cover_url : `${siteUrl}${post.cover_url.startsWith("/") ? "" : "/"}${post.cover_url}`;
-            }
+            const safeMetaImage = normalizeBlogCoverImageUrl(post.cover_image_url || post.cover_url);
+            image = safeMetaImage.startsWith("http") ? safeMetaImage : `${siteUrl}${safeMetaImage.startsWith("/") ? "" : "/"}${safeMetaImage}`;
             type = "article";
 
-            const canonicalUrl = `${siteUrl}/blog/post${post.public_id}`;
+            const canonicalUrl = post.slug
+              ? `${siteUrl}/blog/${post.slug}`
+              : `${siteUrl}/blog/post${post.public_id}`;
 
             // Build Rich Schema.org JSON-LD
             jsonLd = [
@@ -819,6 +811,35 @@ async function startServer() {
 
   const server = app.listen(PORT, HOST, () => {
     console.log(`RR Recruitment Node Server booting on ${HOST}:${PORT} (mode: ${isDev ? "dev-vite" : "production-dist"})...`);
+
+    void (async () => {
+      try {
+        const dbInstance = await getProTalkDB();
+        const loaded = await loadAllFromProTalkDB(dbInstance, db);
+        if (loaded) {
+          if (loaded.projects?.length) db.projects = loaded.projects;
+          if (loaded.candidates?.length) db.candidates = loaded.candidates;
+          if (loaded.payments?.length) db.payments = loaded.payments;
+          if (loaded.employers?.length) db.employers = loaded.employers;
+          if (loaded.companies?.length) db.companies = loaded.companies;
+          console.log(`[Express] Synchronized data with PostgreSQL BD ProTalk: ${db.projects.length} projects, ${db.companies.length} companies, ${db.employers.length} employers`);
+        }
+      } catch (err) {
+        console.error("[Express] Error synchronizing with PostgreSQL BD ProTalk at startup:", err);
+      }
+
+      try {
+        initBackupCronJob();
+      } catch (cronErr) {
+        console.error("[Cron] Failed initializing backup cron job:", cronErr);
+      }
+
+      try {
+        initSavRssScheduler();
+      } catch (rssErr) {
+        console.error("[SAV RSS] Failed initializing RSS scheduler:", rssErr);
+      }
+    })();
   });
 
   server.on("error", (err: any) => {

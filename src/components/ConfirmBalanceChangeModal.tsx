@@ -41,13 +41,11 @@ export function ConfirmBalanceChangeModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-transparent animate-fade-in"
-      style={{ backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-[#0F2438]/75 backdrop-blur-xl animate-fade-in"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-lg bg-transparent border border-white/20 rounded-3xl p-6 space-y-5 shadow-2xl text-white overflow-hidden"
-        style={{ backdropFilter: "blur(40px)", WebkitBackdropFilter: "blur(40px)" }}
+        className="relative w-full max-w-lg bg-gradient-to-br from-[#17344F] via-[#1E4468] to-[#265582] border border-[#E7C768]/45 rounded-3xl p-6 space-y-5 shadow-2xl text-white overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

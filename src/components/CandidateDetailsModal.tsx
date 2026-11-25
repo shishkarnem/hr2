@@ -7,6 +7,7 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { dbClient } from "@/lib/dbClient";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import EmployerOverallSummary from "@/components/reports/EmployerOverallSummary";
@@ -180,6 +181,7 @@ function Field({ label, value }: { label: string; value: any }) {
 export default function CandidateDetailsModal(props: {
   candidateId: string | null;
   onClose: () => void;
+  surfaceVariant?: "glass" | "blue-gradient";
   onDecisionChange?: (candidateId: string, decision: string, message: string) => void;
 }) {
   return (
@@ -197,10 +199,12 @@ export { CandidateBodyErrorBoundary };
 function CandidateDetailsModalInner({
   candidateId,
   onClose,
+  surfaceVariant = "glass",
   onDecisionChange,
 }: {
   candidateId: string | null;
   onClose: () => void;
+  surfaceVariant?: "glass" | "blue-gradient";
   onDecisionChange?: (candidateId: string, decision: string, message: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -419,10 +423,20 @@ function CandidateDetailsModalInner({
     ? hexToRgbaLocal(activeTheme.containerBorderColor || "#E7C768", activeTheme.containerBorderOpacity ?? 45)
     : "rgba(231, 199, 104, 0.45)";
 
-  return (
-    <div className="fixed inset-0 z-[60] bg-transparent flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+  const isBlue = surfaceVariant === "blue-gradient";
+  const modalTree = (
+    <div
+      className={`fixed inset-0 z-[900] flex items-start justify-center overflow-y-auto p-3 sm:p-4 ${
+        isBlue ? "bg-[#0F2438]/75 backdrop-blur-xl" : "bg-transparent"
+      }`}
+      onClick={onClose}
+    >
       <div
-        className="relative w-full max-w-4xl bg-transparent backdrop-blur-2xl border border-white/20 rounded-3xl shadow-2xl my-8 text-[14px]"
+        className={`relative w-full max-w-4xl rounded-3xl shadow-2xl my-6 sm:my-8 text-[14px] ${
+          isBlue
+            ? "bg-gradient-to-br from-[#17344F] via-[#1E4468] to-[#265582] border border-[#E7C768]/45"
+            : "bg-transparent backdrop-blur-2xl border border-white/20"
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -757,4 +771,9 @@ function CandidateDetailsModalInner({
       </div>
     </div>
   );
+
+  if (typeof document !== "undefined") {
+    return createPortal(modalTree, document.body);
+  }
+  return modalTree;
 }

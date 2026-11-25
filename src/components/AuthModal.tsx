@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "./RouterContext";
 import { dbClient } from "@/lib/dbClient";
 import { readCachedEmployerPublicIdForUser, resolveProfilePathForUser } from "@/lib/links";
@@ -25,6 +26,7 @@ interface AuthModalProps {
   onClose: () => void;
   intent?: "employer" | "candidate";
   initialMode?: "register" | "login" | "forgot";
+  surfaceVariant?: "glass" | "blue-gradient";
   onSuccess?: () => void;
 }
 
@@ -32,7 +34,14 @@ type Mode = "register" | "login" | "forgot";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+?[0-9 ()\-]{7,20}$/;
 
-export default function AuthModal({ isOpen, onClose, intent = "employer", initialMode = "login", onSuccess }: AuthModalProps) {
+export default function AuthModal({
+  isOpen,
+  onClose,
+  intent = "employer",
+  initialMode = "login",
+  surfaceVariant = "glass",
+  onSuccess,
+}: AuthModalProps) {
   const { navigate } = useRouter();
 
   const [mode, setMode] = useState<Mode>(initialMode);
@@ -263,14 +272,25 @@ export default function AuthModal({ isOpen, onClose, intent = "employer", initia
     return handleForgot();
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop: строго прозрачный с размытием без затемнения и осветления фона */}
+  const isBlueGradient = surfaceVariant === "blue-gradient";
+
+  const modalNode = (
+    <div className="fixed inset-0 z-[950] flex items-center justify-center p-4">
       <div
-        className="fixed inset-0 bg-transparent backdrop-blur-2xl transition-opacity"
+        className={
+          isBlueGradient
+            ? "fixed inset-0 bg-gradient-to-br from-[#0F2438]/90 via-[#17344F]/90 to-[#265582]/90 backdrop-blur-2xl transition-opacity"
+            : "fixed inset-0 bg-transparent backdrop-blur-2xl transition-opacity"
+        }
         onClick={onClose}
       />
-      <div className="bg-transparent backdrop-blur-2xl border border-white/20 text-white rounded-3xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 md:p-8 space-y-4 shadow-2xl relative z-10 text-left animate-in fade-in zoom-in duration-200">
+      <div
+        className={`${
+          isBlueGradient
+            ? "bg-gradient-to-br from-[#17344F] via-[#1E4468] to-[#265582] border border-[#E7C768]/45"
+            : "bg-transparent backdrop-blur-2xl border border-white/20"
+        } text-white rounded-3xl max-w-lg w-full max-h-[92dvh] overflow-y-auto p-6 md:p-8 space-y-4 shadow-2xl relative z-10 text-left animate-in fade-in zoom-in duration-200`}
+      >
 
         <button
           onClick={onClose}
@@ -485,4 +505,9 @@ export default function AuthModal({ isOpen, onClose, intent = "employer", initia
       </div>
     </div>
   );
+
+  if (typeof document !== "undefined") {
+    return createPortal(modalNode, document.body);
+  }
+  return modalNode;
 }

@@ -89,9 +89,9 @@ export function SystemAdminPage() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Authentication state - require password entry
+  // Authentication state - require server-verified password entry
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return sessionStorage.getItem("sysadmin_password") === "wkL35eTm";
+    return Boolean(sessionStorage.getItem("sysadmin_password"));
   });
   const [passwordInput, setPasswordInput] = useState<string>("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -352,7 +352,7 @@ export function SystemAdminPage() {
     try {
       const res = await fetch("/api/rpc/admin_wallet_adjust", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           _employer: row.id || row.public_id,
           _delta: delta,
@@ -389,7 +389,7 @@ export function SystemAdminPage() {
     try {
       const res = await fetch("/api/rpc/admin_employer_set_limit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAdminHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           _employer: row.id || row.public_id,
           _field: field,
@@ -428,9 +428,14 @@ export function SystemAdminPage() {
 
   const fetchBotSettings = async () => {
     try {
-      const res = await fetch(`/api/admin/bot-settings?pwd=${encodeURIComponent(getAdminPwd())}`, {
+      const res = await fetch("/api/admin/bot-settings", {
         headers: getAdminHeaders(),
       });
+      if (res.status === 401) {
+        sessionStorage.removeItem("sysadmin_password");
+        setIsAuthenticated(false);
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setBotUsername(data.botUsername || "@RoboRecrutBot");
@@ -449,7 +454,7 @@ export function SystemAdminPage() {
   const saveBotSettings = async () => {
     setIsSavingTg(true);
     try {
-      const res = await fetch(`/api/admin/bot-settings?pwd=${encodeURIComponent(getAdminPwd())}`, {
+      const res = await fetch("/api/admin/bot-settings", {
         method: "POST",
         headers: { ...getAdminHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -487,7 +492,7 @@ export function SystemAdminPage() {
 
   const fetchAppVersion = async () => {
     try {
-      const res = await fetch(`/api/admin/app-version?pwd=${encodeURIComponent(getAdminPwd())}`, {
+      const res = await fetch("/api/admin/app-version", {
         headers: getAdminHeaders(),
       });
       if (res.ok) {
@@ -507,7 +512,7 @@ export function SystemAdminPage() {
     }
     setIsSavingVersion(true);
     try {
-      const res = await fetch(`/api/admin/app-version?pwd=${encodeURIComponent(getAdminPwd())}`, {
+      const res = await fetch("/api/admin/app-version", {
         method: "POST",
         headers: getAdminHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ version: trimmed }),
@@ -531,7 +536,7 @@ export function SystemAdminPage() {
   const triggerManualBackup = async () => {
     setIsTriggeringBackup(true);
     try {
-      const res = await fetch(`/api/admin/backup/trigger?pwd=${encodeURIComponent(getAdminPwd())}`, {
+      const res = await fetch("/api/admin/backup/trigger", {
         method: "POST",
         headers: getAdminHeaders(),
       });
@@ -587,13 +592,8 @@ export function SystemAdminPage() {
       } else {
         setAuthError(data.error || "Неверный пароль администратора.");
       }
-    } catch (err: any) {
-      if (passwordInput === "wkL35eTm") {
-        sessionStorage.setItem("sysadmin_password", passwordInput);
-        setIsAuthenticated(true);
-      } else {
-        setAuthError("Неверный пароль администратора.");
-      }
+    } catch {
+      setAuthError("Ошибка соединения с сервером при проверке пароля.");
     } finally {
       setIsLoggingIn(false);
     }

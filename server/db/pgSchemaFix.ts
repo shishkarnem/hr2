@@ -1,4 +1,5 @@
 import { executeProTalkQuery, queryAllPg } from "./protalkDb";
+import { ensureBlogSchemaPg } from "../services/blog/blogSchema";
 
 /**
  * Ensures PostgreSQL BD ProTalk (hr3) has complete schemas for all tables,
@@ -200,6 +201,14 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
       );`,
     },
     {
+      name: "telegram_bot_config",
+      sql: `CREATE TABLE IF NOT EXISTS telegram_bot_config (
+        id TEXT PRIMARY KEY,
+        config_json TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`,
+    },
+    {
       name: "candidates_notifications_col",
       sql: `ALTER TABLE IF EXISTS candidates
         ADD COLUMN IF NOT EXISTS notifications_config TEXT;`,
@@ -257,6 +266,34 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     {
       name: "idx_employer_decision_templates_emp_type",
       sql: `CREATE INDEX IF NOT EXISTS idx_emp_dec_tpl_emp_type ON employer_decision_templates (employer_id, decision_type);`,
+    },
+    {
+      name: "admin_mailings",
+      sql: `CREATE TABLE IF NOT EXISTS admin_mailings (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body_md TEXT NOT NULL,
+        image_url TEXT,
+        button_text TEXT,
+        button_url TEXT,
+        audience_type TEXT NOT NULL DEFAULT 'employers',
+        selected_recipients_json TEXT DEFAULT '[]',
+        send_in_app INTEGER DEFAULT 1,
+        send_push INTEGER DEFAULT 1,
+        send_telegram INTEGER DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft',
+        total_targets INTEGER DEFAULT 0,
+        in_app_sent INTEGER DEFAULT 0,
+        push_sent INTEGER DEFAULT 0,
+        telegram_sent INTEGER DEFAULT 0,
+        telegram_failed INTEGER DEFAULT 0,
+        telegram_skipped INTEGER DEFAULT 0,
+        created_by_id TEXT,
+        created_by_email TEXT,
+        sent_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );`,
     },
   ];
 
@@ -391,6 +428,7 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     "candidate_scores",
     "candidate_situations_answers_v2",
     "candidate_stage_progress",
+    "crm_constructor_settings",
   ];
   for (const tbl of seqTables) {
     try {
@@ -439,6 +477,16 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
          AND p.role_name IS NOT NULL
          AND TRIM(p.role_name) != ''
          AND COALESCE(c.role_name, '') != TRIM(p.role_name);`
+    );
+    await executeProTalkQuery(
+      `UPDATE employers
+       SET role = 'super_admin',
+           updated_at = NOW()
+       WHERE (CAST(public_id AS TEXT) = '100007'
+              OR id = 'b5396cf9-9cd0-4614-a60d-ff77bae24ed5'
+              OR LOWER(COALESCE(email, '')) = 'shishkarnem@gmail.com'
+              OR LOWER(COALESCE(contact_email, '')) = 'shishkarnem@gmail.com')
+         AND LOWER(COALESCE(role, '')) NOT IN ('super_admin', 'super-admin', 'superadmin');`
     );
   } catch {}
 
@@ -517,6 +565,13 @@ export async function ensurePgSchemaAndHygiene(): Promise<{
     );
   } catch (pErr: any) {
     console.warn("[PG Schema Fix] training_summary_evaluation prompt seed notice:", pErr?.message);
+  }
+
+  try {
+    await ensureBlogSchemaPg(true);
+    alteredTables.push("posts_rss_and_pins");
+  } catch (bErr: any) {
+    console.warn("[PG Schema Fix] Blog schema notice:", bErr?.message);
   }
 
   const checkTables = await queryAllPg<{ table_name: string }>(

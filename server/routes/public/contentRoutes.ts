@@ -50,7 +50,7 @@ publicContentRouter.get("/onboarding", async (_req: Request, res: Response) => {
   }
 });
 
-publicContentRouter.get("/job-titles", async (_req: Request, res: Response) => {
+publicContentRouter.get("/job-titles", async (req: Request, res: Response) => {
   try {
     const pgRes = await queryPgRaw(`
       SELECT 
@@ -86,6 +86,24 @@ publicContentRouter.get("/job-titles", async (_req: Request, res: Response) => {
       created_by: r.created_by || "",
       created_at: r.created_at || "",
     }));
+
+    const paginated = req.query.paginated === "1" || req.query.paginated === "true";
+    if (paginated) {
+      const q = String(req.query.q || "").trim().toLowerCase();
+      const filtered = q
+        ? result.filter((r) => r.title.toLowerCase().includes(q) || String(r.id).toLowerCase().includes(q))
+        : result;
+      const rawLimit = Number(req.query.limit ?? 20);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : 20;
+      const rawOffset = Number(req.query.offset ?? 0);
+      const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+      const items = filtered.slice(offset, offset + limit);
+      return res.json({
+        items,
+        total: filtered.length,
+        hasMore: offset + items.length < filtered.length,
+      });
+    }
 
     return res.json(result);
   } catch (err: any) {

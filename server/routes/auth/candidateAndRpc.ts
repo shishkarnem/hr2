@@ -19,6 +19,7 @@ import {
 } from "./helpers";
 import { handleEmployerReferralAndLimitsRpc } from "../../authHelpers/employerLimitsRpc";
 import { handleProjectAndCompanyRpc } from "../../authHelpers/projectLimitsRpc";
+import { handleAdminPaginationRpc } from "../../authHelpers/adminPaginationRpc";
 
 export const candidateAndRpcRouter = Router();
 
@@ -311,7 +312,14 @@ candidateAndRpcRouter.post("/rpc/:method", async (req: Request, res: Response) =
     if (method === "notifications_list") return res.json({ data: await getUserNotifications(db, req, body), error: null });
     if (method === "notifications_mark_read") return res.json({ data: await markNotificationsRead(db, req, body), error: null });
 
-    if (method === "admin_list_candidates" || method === "employer_list_candidates") {
+    if (method === "admin_list_candidates") {
+      const { isAuthorizedAdminOrSysAdmin } = await import("../admin/authAndTelegram");
+      if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+        return res.status(401).json({ data: null, error: "Требуется авторизация администратора" });
+      }
+      return await handleListCandidatesRpc(db, method, body, res);
+    }
+    if (method === "employer_list_candidates") {
       return await handleListCandidatesRpc(db, method, body, res);
     }
     if (method === "candidate_full_details") {
@@ -457,6 +465,7 @@ candidateAndRpcRouter.post("/rpc/:method", async (req: Request, res: Response) =
       });
     }
 
+    if (await handleAdminPaginationRpc(db, method, req, body, res)) return;
     if (await handleEmployerReferralAndLimitsRpc(db, method, req, body, res)) return;
     if (await handleProjectAndCompanyRpc(db, method, req, body, res)) return;
 

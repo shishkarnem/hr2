@@ -358,13 +358,11 @@ class LocalDBClient {
         }
         const pathEmpMatch =
           typeof window !== "undefined" ? window.location.pathname.match(/\/emp(\d{4,15})/i) : null;
-        const pathAdmin =
-          typeof window !== "undefined" && window.location.pathname.toLowerCase().includes("/admin");
         const fallbackEmpId =
           pathEmpMatch?.[1] ||
           (typeof localStorage !== "undefined" ? localStorage.getItem("current_employer_id") : null) ||
           parsedUser?.id ||
-          (pathAdmin ? "admin" : null);
+          null;
 
         if (token || parsedUser || fallbackEmpId) {
           return {

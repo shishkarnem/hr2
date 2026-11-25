@@ -201,19 +201,28 @@ adminTablesCrudRouter.get("/table/:tableName", async (req: Request, res: Respons
     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
       return res.status(400).json({ error: "Invalid table name" });
     }
-    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 20));
     const offset = Math.max(0, Number(req.query.offset) || 0);
 
-    const [rows, totalRes, schema] = await Promise.all([
-      queryAllPg(`SELECT * FROM "${tableName}" LIMIT $1 OFFSET $2`, [limit, offset]),
+    const schema = await getPgTableMeta(tableName);
+    const colNames = new Set((schema || []).map((c) => c.name));
+    const orderSql = colNames.has("created_at")
+      ? `ORDER BY "created_at" DESC NULLS LAST`
+      : colNames.has("updated_at")
+      ? `ORDER BY "updated_at" DESC NULLS LAST`
+      : "";
+
+    const [rows, totalRes] = await Promise.all([
+      queryAllPg(`SELECT * FROM "${tableName}" ${orderSql} LIMIT $1 OFFSET $2`, [limit, offset]),
       queryGetPg<{ cnt: number }>(`SELECT COUNT(*)::int AS cnt FROM "${tableName}"`),
-      getPgTableMeta(tableName),
     ]);
 
+    const total = totalRes ? Number(totalRes.cnt || 0) : 0;
     return res.json({
       tableName,
       rows,
-      total: totalRes ? Number(totalRes.cnt || 0) : 0,
+      total,
+      hasMore: offset + (rows?.length || 0) < total,
       schema,
     });
   } catch (err: any) {

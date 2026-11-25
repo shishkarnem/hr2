@@ -16,6 +16,10 @@ import {
 import { dbClient } from "@/lib/dbClient";
 import { useRouter } from "@/components/RouterContext";
 import { useLandingTheme } from "./LandingStyleEditor";
+import {
+  MailingMarkdownView,
+  stripMarkdownPreview,
+} from "./admin/mailings/MarkdownPreview";
 
 export type NotificationItem = {
   id: string;
@@ -606,7 +610,9 @@ export default function NotificationsBell({ employerId, candidateId, className =
 
                           {n.body && (
                             <p className="text-sm text-slate-200 mt-1 line-clamp-2 leading-snug">
-                              {n.body}
+                              {n.kind === "admin_mailing" || n.meta?.format === "markdown"
+                                ? stripMarkdownPreview(n.body)
+                                : n.body}
                             </p>
                           )}
 
@@ -733,13 +739,34 @@ export default function NotificationsBell({ employerId, candidateId, className =
                   </div>
                 )}
 
-                {/* Body Text */}
-                {detail.body && (
+                {/* Optional Mailing Image */}
+                {detail.meta?.image_url && (
                   <div
-                    className="bg-transparent backdrop-blur-xl border border-white/20 p-4 text-sm text-slate-100 whitespace-pre-wrap leading-relaxed"
+                    className="overflow-hidden border border-white/20"
                     style={{ borderRadius: containerRadius }}
                   >
-                    {detail.body}
+                    <img
+                      src={detail.meta.image_url}
+                      alt=""
+                      className="w-full max-h-64 object-cover"
+                    />
+                  </div>
+                )}
+
+                {/* Body Text (Markdown-aware for admin mailings) */}
+                {detail.body && (
+                  <div
+                    className="bg-transparent backdrop-blur-xl border border-white/20 p-4 text-sm text-slate-100 leading-relaxed"
+                    style={{ borderRadius: containerRadius }}
+                  >
+                    {detail.kind === "admin_mailing" || detail.meta?.format === "markdown" ? (
+                      <MailingMarkdownView
+                        content={detail.body}
+                        linkColor={theme?.boldTextColor || iconColor}
+                      />
+                    ) : (
+                      <div className="whitespace-pre-wrap">{detail.body}</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -783,6 +810,33 @@ export default function NotificationsBell({ employerId, candidateId, className =
                       >
                         <UserSquare2 className="w-4 h-4" />
                         <span>Перейти к кандидату</span>
+                      </button>
+                    );
+                  }
+
+                  if (detail.link && (detail.kind === "admin_mailing" || detail.meta?.button_text)) {
+                    const href = detail.link.trim();
+                    const isExt = /^https?:\/\//i.test(href);
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDetail(null);
+                          if (isExt) {
+                            const a = document.createElement("a");
+                            a.href = href;
+                            a.target = "_blank";
+                            a.rel = "noopener noreferrer";
+                            a.click();
+                          } else {
+                            navigate(href);
+                          }
+                        }}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 font-bold text-sm transition cursor-pointer shadow-md border"
+                        style={activeBtnStyle}
+                      >
+                        <ArrowRight className="w-4 h-4" />
+                        <span>{detail.meta?.button_text || "Перейти"}</span>
                       </button>
                     );
                   }

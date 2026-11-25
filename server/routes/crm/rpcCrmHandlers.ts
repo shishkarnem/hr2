@@ -236,6 +236,125 @@ export async function handleListCandidatesRpc(db: PgDBWrapper, method: string, b
     candWhereSql = `WHERE (${clauses.join(" OR ")})`;
   }
 
+  const isPaginatedAdmin = method === "admin_list_candidates" && Boolean(body?._paginated);
+  if (isPaginatedAdmin) {
+    const rawLimit = Number(body?._limit ?? body?.limit ?? 20);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : 20;
+    const rawOffset = Number(body?._offset ?? body?.offset ?? 0);
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+    const searchQ = String(body?._search ?? body?.search ?? "").trim();
+    const stageQ = String(body?._stage ?? body?.stage ?? "all").trim().toLowerCase();
+
+    const adminClauses: string[] = [];
+    const adminParams: any[] = [];
+
+    if (stageQ && stageQ !== "all") {
+      if (stageQ === "registration") {
+        adminClauses.push(
+          `(LOWER(COALESCE(NULLIF(TRIM(crm_stage), ''), NULLIF(TRIM(stage), ''), 'registration')) IN ('registration', 'new'))`
+        );
+      } else {
+        adminClauses.push(
+          `LOWER(COALESCE(NULLIF(TRIM(crm_stage), ''), NULLIF(TRIM(stage), ''), 'registration')) = ?`
+        );
+        adminParams.push(stageQ);
+      }
+    }
+
+    if (searchQ) {
+      const ql = searchQ.toLowerCase();
+      const matchingProjKeys = new Set<string>();
+      for (const p of allProjects || []) {
+        const comp = p.company_id ? compMap.get(String(p.company_id)) : null;
+        const matchP =
+          String(p.role_name || "").toLowerCase().includes(ql) ||
+          String(p.company_name || "").toLowerCase().includes(ql) ||
+          String(comp?.name || "").toLowerCase().includes(ql);
+        if (matchP) {
+          if (p.id) matchingProjKeys.add(String(p.id));
+          if (p.public_id) matchingProjKeys.add(String(p.public_id));
+        }
+      }
+      const matchingCompKeys = new Set<string>();
+      for (const c of allCompanies || []) {
+        if (String(c.name || "").toLowerCase().includes(ql)) {
+          if (c.id) matchingCompKeys.add(String(c.id));
+          if (c.public_id) matchingCompKeys.add(String(c.public_id));
+        }
+      }
+
+      const like = `%${searchQ}%`;
+      const orParts = [
+        `COALESCE(full_name, '') ILIKE ?`,
+        `COALESCE(email, '') ILIKE ?`,
+        `COALESCE(role_name, '') ILIKE ?`,
+        `COALESCE(CAST(public_id AS TEXT), '') ILIKE ?`,
+      ];
+      adminParams.push(like, like, like, like);
+      const projArr = Array.from(matchingProjKeys).slice(0, 200);
+      if (projArr.length > 0) {
+        orParts.push(`project_id IN (${projArr.map(() => "?").join(",")})`);
+        adminParams.push(...projArr);
+      }
+      const compArr = Array.from(matchingCompKeys).slice(0, 200);
+      if (compArr.length > 0) {
+        orParts.push(`company_id IN (${compArr.map(() => "?").join(",")})`);
+        adminParams.push(...compArr);
+      }
+      adminClauses.push(`(${orParts.join(" OR ")})`);
+    }
+
+    const adminWhereSql = adminClauses.length > 0 ? `WHERE ${adminClauses.join(" AND ")}` : "";
+    const [cntRow, pagedCandList] = await Promise.all([
+      db.get(`SELECT COUNT(*)::int AS cnt FROM candidates ${adminWhereSql}`, adminParams),
+      db.all(
+        `SELECT ${CANDIDATE_LIST_COLS} FROM candidates ${adminWhereSql} ORDER BY created_at DESC NULLS LAST LIMIT ? OFFSET ?`,
+        [...adminParams, limit, offset]
+      ),
+    ]);
+    const total = Number(cntRow?.cnt || 0);
+    if (!pagedCandList || pagedCandList.length === 0) {
+      return res.json({ data: { items: [], total, hasMore: false }, error: null });
+    }
+
+    const candKeys = Array.from(
+      new Set(pagedCandList.flatMap((c: any) => [c.id, c.public_id].filter(Boolean).map(String)))
+    );
+    const candPh = candKeys.map(() => "?").join(",");
+    const [pScores, pStageProg] = await Promise.all([
+      candKeys.length
+        ? db.all(
+            `SELECT candidate_id, overall_score, interview_score, resume_score, checklist_score, situations_score FROM candidate_scores WHERE candidate_id IN (${candPh})`,
+            candKeys
+          )
+        : Promise.resolve([]),
+      candKeys.length
+        ? db.all(
+            `SELECT candidate_id, stage, passed_at, best_score, last_score FROM candidate_stage_progress WHERE candidate_id IN (${candPh})`,
+            candKeys
+          )
+        : Promise.resolve([]),
+    ]);
+    const scoreMap = new Map<string, any>();
+    for (const s of pScores || []) if (s.candidate_id) scoreMap.set(String(s.candidate_id), s);
+    const stageProgByCand = new Map<string, any[]>();
+    for (const sp of pStageProg || []) {
+      const cid = String(sp.candidate_id);
+      const list = stageProgByCand.get(cid) || [];
+      list.push(sp);
+      stageProgByCand.set(cid, list);
+    }
+    const items = buildEnrichedCandidates(pagedCandList, projMap, compMap, scoreMap, stageProgByCand);
+    return res.json({
+      data: {
+        items,
+        total,
+        hasMore: offset + items.length < total,
+      },
+      error: null,
+    });
+  }
+
   const rawCandList =
     (await db.all(
       `SELECT ${CANDIDATE_LIST_COLS}

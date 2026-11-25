@@ -7,6 +7,7 @@ import {
 } from "../../db";
 import { notifyLimitChangesToTelegram, notifyProfileChangesToTelegram } from "../../telegram";
 import { queryAllPg } from "../../db/protalkDb";
+import { isAuthorizedAdminOrSysAdmin } from "../admin/authAndTelegram";
 
 export const adminRpcRouter = Router();
 
@@ -39,6 +40,9 @@ function coerceRpcValue(v: any, pgType: string): any {
 }
 
 adminRpcRouter.delete("/admin/tables/:table/:id", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const { table, id } = req.params;
     const allowedTables = [
@@ -88,6 +92,9 @@ adminRpcRouter.delete("/admin/tables/:table/:id", async (req: Request, res: Resp
 adminRpcRouter.put(
   ["/admin/tables/:table/:id", "/admin/table/:table/:id", "/tables/:table/:id", "/table/:table/:id"],
   async (req: Request, res: Response) => {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      return res.status(401).json({ error: "Требуется авторизация администратора" });
+    }
     try {
       const { table, id } = req.params;
       if (!/^[a-zA-Z0-9_]+$/.test(table)) {
@@ -170,6 +177,9 @@ adminRpcRouter.put(
 adminRpcRouter.post(
   ["/rpc/admin_wallet_adjust", "/admin/rpc/admin_wallet_adjust"],
   async (req: Request, res: Response) => {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      return res.status(401).json({ error: "Требуется авторизация администратора" });
+    }
     try {
       const { _employer, _delta, _note, _type } = req.body || {};
       if (!_employer) return res.status(400).json({ error: "Missing _employer" });
@@ -259,6 +269,9 @@ const LIMIT_FIELD_LABELS: Record<string, string> = {
 adminRpcRouter.post(
   ["/rpc/admin_employer_set_limit", "/admin/rpc/admin_employer_set_limit"],
   async (req: Request, res: Response) => {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      return res.status(401).json({ error: "Требуется авторизация администратора" });
+    }
     try {
       const { _employer, _field, _value, _note } = req.body || {};
       if (!_employer || !_field) return res.status(400).json({ error: "Missing _employer or _field" });
@@ -322,6 +335,9 @@ adminRpcRouter.post(
 adminRpcRouter.post(
   ["/rpc/admin_employer_set_limits", "/admin/rpc/admin_employer_set_limits"],
   async (req: Request, res: Response) => {
+    if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+      return res.status(401).json({ error: "Требуется авторизация администратора" });
+    }
     try {
       const { _employer, _limits, _deltas, _note } = req.body || {};
       if (!_employer || (!_limits && !_deltas)) {
@@ -404,7 +420,10 @@ adminRpcRouter.post(
   }
 );
 
-adminRpcRouter.get("/admin/protalk-bots", async (_req: Request, res: Response) => {
+adminRpcRouter.get("/admin/protalk-bots", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const db = await getProTalkDB();
     const rows = await db.all("SELECT * FROM protalk_bots ORDER BY created_at ASC NULLS LAST");
@@ -415,6 +434,9 @@ adminRpcRouter.get("/admin/protalk-bots", async (_req: Request, res: Response) =
 });
 
 adminRpcRouter.post("/admin/protalk-bots", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const {
       id,
@@ -473,7 +495,10 @@ adminRpcRouter.post("/admin/protalk-bots", async (req: Request, res: Response) =
   }
 });
 
-adminRpcRouter.get("/admin/protalk-prompts", async (_req: Request, res: Response) => {
+adminRpcRouter.get("/admin/protalk-prompts", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const db = await getProTalkDB();
     const rows = await db.all(
@@ -489,6 +514,9 @@ adminRpcRouter.get("/admin/protalk-prompts", async (_req: Request, res: Response
 });
 
 adminRpcRouter.post("/admin/protalk-prompts", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const {
       id,
@@ -539,7 +567,10 @@ adminRpcRouter.post("/admin/protalk-prompts", async (req: Request, res: Response
   }
 });
 
-adminRpcRouter.get("/admin/payments", async (_req: Request, res: Response) => {
+adminRpcRouter.get("/admin/payments", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const dbInstance = await getProTalkDB();
     const rows = (await dbInstance.all("SELECT * FROM payments ORDER BY created_at DESC NULLS LAST LIMIT 200")) || [];
@@ -550,6 +581,9 @@ adminRpcRouter.get("/admin/payments", async (_req: Request, res: Response) => {
 });
 
 adminRpcRouter.post("/admin/pay-mock", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   const { companyName, amount, itemType, itemName } = req.body || {};
   const dbInstance = await getProTalkDB();
   const newPayment = {
@@ -566,6 +600,9 @@ adminRpcRouter.post("/admin/pay-mock", async (req: Request, res: Response) => {
 });
 
 adminRpcRouter.delete("/admin/candidates/:id", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const { id } = req.params;
     const dbInstance = await getProTalkDB();
@@ -582,6 +619,9 @@ adminRpcRouter.delete("/admin/candidates/:id", async (req: Request, res: Respons
 });
 
 adminRpcRouter.delete("/admin/projects/:id", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(401).json({ error: "Требуется авторизация администратора" });
+  }
   try {
     const { id } = req.params;
     const dbInstance = await getProTalkDB();
@@ -594,5 +634,33 @@ adminRpcRouter.delete("/admin/projects/:id", async (req: Request, res: Response)
     return res.json({ success: true, message: "Проект и связанные кандидаты удалены" });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+adminRpcRouter.post("/admin-set-user-password", async (req: Request, res: Response) => {
+  if (!(await isAuthorizedAdminOrSysAdmin(req))) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  try {
+    const emailNorm = String(req.body?.email || "").trim().toLowerCase();
+    const newPassword = String(req.body?.password || "");
+    if (!emailNorm || newPassword.length < 6) {
+      return res.status(400).json({ error: "invalid_input" });
+    }
+    const dbInstance = await getProTalkDB();
+    const existing = await dbInstance.get(
+      "SELECT id FROM employers WHERE LOWER(email) = ? OR LOWER(contact_email) = ? LIMIT 1",
+      [emailNorm, emailNorm]
+    );
+    if (!existing) {
+      return res.json({ error: "user_not_found" });
+    }
+    await dbInstance.run(
+      "UPDATE employers SET password_hash = ?, updated_at = NOW() WHERE id = ?",
+      [newPassword, existing.id]
+    );
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || "server_error" });
   }
 });

@@ -55,6 +55,17 @@ import { rrImg, DEFAULT_RR_LOGO_URL } from "@/lib/img";
 import AuthModal from "../components/AuthModal";
 import AudioField from "../components/AudioField";
 import { CrmFilterModal, KanbanColumnModal, TableColumnModal, type CrmFieldFilters, type AvailableCustomField, type CrmVacancyOption } from "@/components/crm/CrmModals";
+import {
+  DEFAULT_PERSISTED_CRM_FILTERS,
+  type PersistedCrmFilters,
+  compactCrmFiltersForStorage,
+  normalizeEmployerFilterKey,
+  normalizePersistedCrmFilters,
+  readLocalCrmFilters,
+  serializeCrmFiltersSignature,
+  shouldApplyServerCrmFilters,
+  writeLocalCrmFilters,
+} from "@/components/crm/crmFiltersPersistence";
 import CrmConstructorModal from "@/components/CrmConstructorModal";
 import CrmDialogsModal from "@/components/CrmDialogsModal";
 import AcademyModal from "@/components/AcademyModal";
@@ -347,18 +358,23 @@ export default function EmployerPanel() {
     activeTab = "crm";
   }
 
-  // CRM sub-view styles
-  const [crmViewMode, setCrmViewMode] = useState<"kanban" | "table">("kanban");
-  const [crmFilterRole, setCrmFilterRole] = useState<string>("all");
-  const [crmFilterCompany, setCrmFilterCompany] = useState<string>("all");
-  const [crmFilterStage, setCrmFilterStage] = useState<string>("all");
-  const [crmFilterVerdict, setCrmFilterVerdict] = useState<string>("all");
-  const [crmFilterDecision, setCrmFilterDecision] = useState<string>("all");
-  const [crmSort, setCrmSort] = useState<{ field: string; dir: "asc" | "desc" }>({ field: "created", dir: "desc" });
+  // CRM sub-view styles & persisted filter initialization (0ms synchronous hydration)
+  const initialSavedCrmFilters = useMemo(
+    () => readLocalCrmFilters(employerId) || DEFAULT_PERSISTED_CRM_FILTERS,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+  const [crmViewMode, setCrmViewMode] = useState<"kanban" | "table">(() => initialSavedCrmFilters.crmViewMode);
+  const [crmFilterRole, setCrmFilterRole] = useState<string>(() => initialSavedCrmFilters.crmFilterRole);
+  const [crmFilterCompany, setCrmFilterCompany] = useState<string>(() => initialSavedCrmFilters.crmFilterCompany);
+  const [crmFilterStage, setCrmFilterStage] = useState<string>(() => initialSavedCrmFilters.crmFilterStage);
+  const [crmFilterVerdict, setCrmFilterVerdict] = useState<string>(() => initialSavedCrmFilters.crmFilterVerdict);
+  const [crmFilterDecision, setCrmFilterDecision] = useState<string>(() => initialSavedCrmFilters.crmFilterDecision);
+  const [crmSort, setCrmSort] = useState<{ field: string; dir: "asc" | "desc" }>(() => initialSavedCrmFilters.crmSort);
   // Period filter on updated_at: "all" | "24h" | "custom"
-  const [crmDatePreset, setCrmDatePreset] = useState<"all" | "24h" | "custom">("all");
-  const [crmDateFrom, setCrmDateFrom] = useState<string>("");
-  const [crmDateTo, setCrmDateTo] = useState<string>("");
+  const [crmDatePreset, setCrmDatePreset] = useState<"all" | "24h" | "custom">(() => initialSavedCrmFilters.crmDatePreset);
+  const [crmDateFrom, setCrmDateFrom] = useState<string>(() => initialSavedCrmFilters.crmDateFrom);
+  const [crmDateTo, setCrmDateTo] = useState<string>(() => initialSavedCrmFilters.crmDateTo);
   const [hireDecisionMap, setHireDecisionMap] = useState<Record<string, string>>({});
 
   // Unified Filter Modal & Column Modals
@@ -446,21 +462,105 @@ export default function EmployerPanel() {
 
   const [tableCurrentPage, setTableCurrentPage] = useState<number>(1);
 
-  // Sync CRM Constructor Settings with Server (PostgreSQL BD ProTalk)
+  const lastSyncedCrmSigRef = useRef<string>(serializeCrmFiltersSignature(initialSavedCrmFilters));
+  const filtersReadyEmployerRef = useRef<string>("");
+  const prevHydratedEmployerRef = useRef<string>(normalizeEmployerFilterKey(employerId));
+  const filtersSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingFiltersServerSyncRef = useRef<{ empId: string; payload: Record<string, any> } | null>(null);
+
+  const flushPendingCrmFiltersToServer = async (useKeepalive = false) => {
+    if (filtersSaveTimerRef.current) {
+      clearTimeout(filtersSaveTimerRef.current);
+      filtersSaveTimerRef.current = null;
+    }
+    const pending = pendingFiltersServerSyncRef.current;
+    if (!pending) return;
+    pendingFiltersServerSyncRef.current = null;
+    try {
+      await fetch(`/api/crm/constructor/${encodeURIComponent(pending.empId)}`, {
+        method: "POST",
+        keepalive: useKeepalive,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: { crmFilters: pending.payload } }),
+      });
+    } catch {
+      // keep local cache intact even if network fails
+    }
+  };
+
+  // Sync CRM Constructor Settings + Persisted Filters with Server (PostgreSQL BD ProTalk)
   useEffect(() => {
+    if (hasValidSession === false) return;
     const empId = employerId || "emp";
+    const empKey = normalizeEmployerFilterKey(empId);
+    let cancelled = false;
+
+    if (prevHydratedEmployerRef.current !== empKey) {
+      prevHydratedEmployerRef.current = empKey;
+      const localForEmp = readLocalCrmFilters(empId) || DEFAULT_PERSISTED_CRM_FILTERS;
+      lastSyncedCrmSigRef.current = serializeCrmFiltersSignature(localForEmp);
+      setCrmViewMode(localForEmp.crmViewMode);
+      setCrmSearch(localForEmp.crmSearch);
+      setCrmFilterCompany(localForEmp.crmFilterCompany);
+      setCrmFilterRole(localForEmp.crmFilterRole);
+      setCrmFilterStage(localForEmp.crmFilterStage);
+      setCrmFilterVerdict(localForEmp.crmFilterVerdict);
+      setCrmFilterDecision(localForEmp.crmFilterDecision);
+      setCrmSort(localForEmp.crmSort);
+      setCrmDatePreset(localForEmp.crmDatePreset);
+      setCrmDateFrom(localForEmp.crmDateFrom);
+      setCrmDateTo(localForEmp.crmDateTo);
+      setCrmFieldFilters(localForEmp.crmFieldFilters);
+      setTableColFilters(localForEmp.tableColFilters);
+      setKanbanColSearch(localForEmp.kanbanColSearch);
+      setKanbanColSort(localForEmp.kanbanColSort);
+      setKanbanColFilter(localForEmp.kanbanColFilter);
+    }
+
     fetch(`/api/crm/constructor/${encodeURIComponent(empId)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
+        if (cancelled) return;
         if (data?.settings) {
           if (data.settings.kanbanVisibleCols) setKanbanVisibleCols(data.settings.kanbanVisibleCols);
           if (data.settings.kanbanCardFields) setKanbanCardFields(data.settings.kanbanCardFields);
           if (data.settings.tableVisibleCols) setTableVisibleCols(data.settings.tableVisibleCols);
           if (data.settings.tablePageSize) setTablePageSize(data.settings.tablePageSize);
+          if (data.settings.crmFilters) {
+            const latestLocal = readLocalCrmFilters(empId);
+            if (shouldApplyServerCrmFilters(latestLocal, data.settings.crmFilters)) {
+              const serverFilters = normalizePersistedCrmFilters(data.settings.crmFilters);
+              lastSyncedCrmSigRef.current = serializeCrmFiltersSignature(serverFilters);
+              setCrmViewMode(serverFilters.crmViewMode);
+              setCrmSearch(serverFilters.crmSearch);
+              setCrmFilterCompany(serverFilters.crmFilterCompany);
+              setCrmFilterRole(serverFilters.crmFilterRole);
+              setCrmFilterStage(serverFilters.crmFilterStage);
+              setCrmFilterVerdict(serverFilters.crmFilterVerdict);
+              setCrmFilterDecision(serverFilters.crmFilterDecision);
+              setCrmSort(serverFilters.crmSort);
+              setCrmDatePreset(serverFilters.crmDatePreset);
+              setCrmDateFrom(serverFilters.crmDateFrom);
+              setCrmDateTo(serverFilters.crmDateTo);
+              setCrmFieldFilters(serverFilters.crmFieldFilters);
+              setTableColFilters(serverFilters.tableColFilters);
+              setKanbanColSearch(serverFilters.kanbanColSearch);
+              setKanbanColSort(serverFilters.kanbanColSort);
+              setKanbanColFilter(serverFilters.kanbanColFilter);
+              writeLocalCrmFilters(empId, serverFilters, serverFilters.updatedAt);
+            }
+          }
         }
+        filtersReadyEmployerRef.current = empKey;
       })
-      .catch(() => null);
-  }, [employerId]);
+      .catch(() => {
+        if (!cancelled) filtersReadyEmployerRef.current = empKey;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [employerId, hasValidSession]);
 
   const syncConstructorToServer = (override?: any) => {
     const empId = employerId || "emp";
@@ -522,13 +622,13 @@ export default function EmployerPanel() {
   };
   const [kanbanModalStage, setKanbanModalStage] = useState<string | null>(null);
   const [tableModalCol, setTableModalCol] = useState<string | null>(null);
-  const [crmFieldFilters, setCrmFieldFilters] = useState<CrmFieldFilters>({});
+  const [crmFieldFilters, setCrmFieldFilters] = useState<CrmFieldFilters>(() => initialSavedCrmFilters.crmFieldFilters);
 
   // Per-column controls for Kanban
-  const [kanbanColSearch, setKanbanColSearch] = useState<Record<string, string>>({});
+  const [kanbanColSearch, setKanbanColSearch] = useState<Record<string, string>>(() => initialSavedCrmFilters.kanbanColSearch);
   const [kanbanColSearchOpen, setKanbanColSearchOpen] = useState<Record<string, boolean>>({});
-  const [kanbanColSort, setKanbanColSort] = useState<Record<string, { field: "name" | "date" | "score"; dir: "asc" | "desc" } | undefined>>({});
-  const [kanbanColFilter, setKanbanColFilter] = useState<Record<string, { decision?: string; verdict?: string } | undefined>>({});
+  const [kanbanColSort, setKanbanColSort] = useState<Record<string, { field: "name" | "date" | "score"; dir: "asc" | "desc" } | undefined>>(() => initialSavedCrmFilters.kanbanColSort);
+  const [kanbanColFilter, setKanbanColFilter] = useState<Record<string, { decision?: string; verdict?: string } | undefined>>(() => initialSavedCrmFilters.kanbanColFilter);
   const [kanbanColMenuOpen, setKanbanColMenuOpen] = useState<Record<string, boolean>>({});
 
   // Per-column controls for CRM Table
@@ -560,7 +660,7 @@ export default function EmployerPanel() {
     scoreField?: string;
     scoreMin?: number;
     [key: string]: any;
-  }>({});
+  }>(() => initialSavedCrmFilters.tableColFilters);
   const [tableFilterOpen, setTableFilterOpen] = useState<string | null>(null);
 
   // Kanban refs + helpers (CRM hotfix v2)
@@ -633,9 +733,87 @@ export default function EmployerPanel() {
   const [spendDialog, setSpendDialog] = useState<SpendDialogState | null>(null);
 
   // CRM States
-  const [crmSearch, setCrmSearch] = useState("");
+  const [crmSearch, setCrmSearch] = useState<string>(() => initialSavedCrmFilters.crmSearch);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+
+  // Persist CRM filter changes immediately to localStorage + debounced keepalive sync to DB
+  useEffect(() => {
+    if (hasValidSession !== true) return;
+    const empId = employerId || "emp";
+    const empKey = normalizeEmployerFilterKey(empId);
+    if (filtersReadyEmployerRef.current !== empKey) return;
+
+    const snapshot: PersistedCrmFilters = {
+      crmViewMode,
+      crmSearch,
+      crmFilterCompany,
+      crmFilterRole,
+      crmFilterStage,
+      crmFilterVerdict,
+      crmFilterDecision,
+      crmSort,
+      crmDatePreset,
+      crmDateFrom,
+      crmDateTo,
+      crmFieldFilters,
+      tableColFilters,
+      kanbanColSearch,
+      kanbanColSort,
+      kanbanColFilter,
+    };
+
+    const nextSig = serializeCrmFiltersSignature(snapshot);
+    if (nextSig === lastSyncedCrmSigRef.current) return;
+
+    lastSyncedCrmSigRef.current = nextSig;
+    const nowTs = Date.now();
+    writeLocalCrmFilters(empId, snapshot, nowTs);
+    pendingFiltersServerSyncRef.current = {
+      empId,
+      payload: compactCrmFiltersForStorage(snapshot, nowTs),
+    };
+
+    if (filtersSaveTimerRef.current) {
+      clearTimeout(filtersSaveTimerRef.current);
+    }
+    filtersSaveTimerRef.current = setTimeout(() => {
+      flushPendingCrmFiltersToServer(false);
+    }, 600);
+  }, [
+    employerId,
+    hasValidSession,
+    crmViewMode,
+    crmSearch,
+    crmFilterCompany,
+    crmFilterRole,
+    crmFilterStage,
+    crmFilterVerdict,
+    crmFilterDecision,
+    crmSort,
+    crmDatePreset,
+    crmDateFrom,
+    crmDateTo,
+    crmFieldFilters,
+    tableColFilters,
+    kanbanColSearch,
+    kanbanColSort,
+    kanbanColFilter,
+  ]);
+
+  useEffect(() => {
+    const onUnloadFlush = () => {
+      flushPendingCrmFiltersToServer(true);
+    };
+    window.addEventListener("pagehide", onUnloadFlush);
+    window.addEventListener("beforeunload", onUnloadFlush);
+    return () => {
+      window.removeEventListener("pagehide", onUnloadFlush);
+      window.removeEventListener("beforeunload", onUnloadFlush);
+      flushPendingCrmFiltersToServer(true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Listen for "open-candidate-card" (dispatched by NotificationsBell) and
   // for a ?candidate=<id> URL param so notifications can deep-link into the
@@ -3005,6 +3183,7 @@ export default function EmployerPanel() {
   };
 
   const handleLogout = async () => {
+    await flushPendingCrmFiltersToServer(true);
     try {
       await dbClient.auth.signOut();
     } catch { /* ignore */ }
@@ -5271,7 +5450,7 @@ export default function EmployerPanel() {
               </button>
 
               <button
-                onClick={() => { navigate(`/emp${employerId}/crm`); setCrmViewMode("kanban"); setMobileMenuOpen(false); }}
+                onClick={() => { navigate(`/emp${employerId}/crm`); setMobileMenuOpen(false); }}
                 className={`w-full text-left font-bold text-sm p-2.5 rounded-xl flex flex-col items-start gap-1 transition ${activeTab === "crm" ? "bg-transparent text-[#E7C768] border border-[#E7C768] shadow" : "bg-transparent text-slate-200 hover:bg-white/5 border border-transparent"}`}
               >
                 <span className="border border-[#E7C768]/40 text-[14px] text-[#E7C768] px-2 py-0.5 rounded font-mono font-bold bg-transparent">Кандидаты: {candidates.length}</span>
@@ -5404,7 +5583,7 @@ export default function EmployerPanel() {
               <div className="h-px bg-white/10 my-1"></div>
 
               <button
-                onClick={() => { navigate(`/emp${employerId}/crm`); setCrmViewMode("kanban"); }}
+                onClick={() => { navigate(`/emp${employerId}/crm`); }}
                 data-tour="nav.crm"
                 className={`w-full text-left font-bold text-sm p-2 rounded-xl flex flex-col items-start gap-0.5 transition-all ${activeTab === "crm" ? "bg-transparent text-[#E7C768] border border-[#E7C768] shadow" : "bg-transparent text-slate-200 hover:bg-white/5 border border-transparent"}`}
               >
@@ -10688,7 +10867,7 @@ export default function EmployerPanel() {
 
         <button
           type="button"
-          onClick={() => { navigate(`/emp${employerId}/crm`); setCrmViewMode("kanban"); }}
+          onClick={() => { navigate(`/emp${employerId}/crm`); }}
           className={`flex-1 min-w-[62px] px-2.5 py-1.5 rounded-xl flex flex-col items-center justify-center gap-0.5 transition active:scale-95 bg-transparent ${
             activeTab === "crm"
               ? "text-white font-bold border border-[#E7C768] shadow"

@@ -99,7 +99,36 @@ export async function getTelegramBotConfig(): Promise<TelegramBotConfig> {
     );
     if (!row?.config_json) return defaultConfig;
     const parsed = typeof row.config_json === "string" ? JSON.parse(row.config_json) : row.config_json;
-    return { ...defaultConfig, ...parsed };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return defaultConfig;
+    }
+
+    const botToken =
+      typeof parsed.botToken === "string" && parsed.botToken.trim()
+        ? parsed.botToken.trim()
+        : defaultConfig.botToken;
+    const botUsername =
+      typeof parsed.botUsername === "string" && parsed.botUsername.trim()
+        ? parsed.botUsername.trim()
+        : defaultConfig.botUsername;
+    const proxyType: TelegramBotConfig["proxyType"] =
+      parsed.proxyType === "direct" || parsed.proxyType === "custom_cloudflare" ? parsed.proxyType : "dialog_ai";
+    const apiBaseUrl =
+      typeof parsed.apiBaseUrl === "string" && parsed.apiBaseUrl.trim()
+        ? parsed.apiBaseUrl.trim()
+        : defaultConfig.apiBaseUrl;
+    const adminTelegramId =
+      typeof parsed.adminTelegramId === "string" || typeof parsed.adminTelegramId === "number"
+        ? String(parsed.adminTelegramId).trim() || defaultConfig.adminTelegramId
+        : defaultConfig.adminTelegramId;
+
+    return {
+      botToken,
+      botUsername,
+      proxyType,
+      apiBaseUrl,
+      adminTelegramId,
+    };
   } catch {
     return defaultConfig;
   }

@@ -4,7 +4,16 @@ import fs from "fs";
 import { getProTalkDB } from "../db";
 import { transliterateToSlug } from "../common";
 import { ACADEMY_SECTIONS } from "../../src/lib/academyContent";
-import { executeProTalkQuery } from "../db/protalkDb";
+import { executeProTalkQuery, queryAllPg, queryGetPg } from "../db/protalkDb";
+import { employerSessions, resolveEmployerByToken } from "./auth/helpers";
+import {
+  ensureBlogSchemaPg,
+  getPinnedBlogPostsCountPg,
+  isAllowedBlogUrl,
+  MAX_PINNED_POSTS,
+  normalizeBlogCoverImageUrl,
+} from "../services/blog/blogSchema";
+import { syncSavRssFeed } from "../services/blog/savRssSync";
 
 export async function ensureAcademyPostsSeeded(dbInstance: any) {
   try {
@@ -30,43 +39,26 @@ export function cleanArticleExcerptServer(text: string, maxLength = 220): string
   if (!text) return "";
   let s = String(text);
 
-  // 1. Remove custom blocks completely
   s = s.replace(/:::(?:carousel|frame|button)[\s\S]*?:::/gi, " ");
+  s = s.replace(/```tg-(?:video|gallery|buttons|collapse)[\s\S]*?```/gi, " ");
   s = s.replace(/<iframe[\s\S]*?<\/iframe>/gi, " ");
   s = s.replace(/<[^>]+>/g, " ");
-
-  // 2. Remove standard markdown images ![alt](url)
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");
-
-  // 3. Remove malformed images like !Nakvalnia2https://... or !alt(url) or ![alt]
   s = s.replace(/![^\s]*https?:\/\/[^\s]+/gi, " ");
   s = s.replace(/!\[[^\]]*\]/g, " ");
-
-  // 4. Remove standalone URLs (http:// or https://)
   s = s.replace(/https?:\/\/[^\s)]+/gi, " ");
-
-  // 5. Replace links [text](url) with just the text
   s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
-
-  // 6. Remove markdown tables
   s = s.replace(/^\s*\|.*?\|\s*$/gm, " ");
   s = s.replace(/\|/g, " ");
-
-  // 7. Remove headers, quotes, lists, code blocks
   s = s.replace(/```[\s\S]*?```/g, " ");
   s = s.replace(/`([^`]+)`/g, "$1");
   s = s.replace(/^#{1,6}\s+/gm, " ");
   s = s.replace(/^>\s?/gm, " ");
   s = s.replace(/^\s*[-+*]\s+/gm, " ");
   s = s.replace(/^\s*\d+\.\s+/gm, " ");
-
-  // 8. Remove formatting markers (*, _, ~, #)
   s = s.replace(/[*_~#]/g, "");
-
-  // 9. Normalize whitespace
   s = s.replace(/\s+/g, " ").trim();
 
-  // 10. Truncate cleanly at word boundary
   if (s.length > maxLength) {
     const truncated = s.slice(0, maxLength);
     const lastSpace = truncated.lastIndexOf(" ");
@@ -75,69 +67,247 @@ export function cleanArticleExcerptServer(text: string, maxLength = 220): string
   return s;
 }
 
+function parseBoolFlag(val: any): boolean {
+  return Boolean(val && val !== "0" && val !== 0 && val !== "false");
+}
+
+function normalizePostRow(row: any) {
+  if (!row) return row;
+  const isAcademy = row.category === "academy" || Number(row.public_id) >= 770001;
+  const rawImg = row.cover_image_url || row.cover_url;
+  const coverImage = isAcademy
+    ? rawImg || "/files/13/rr-logo.png"
+    : normalizeBlogCoverImageUrl(rawImg);
+  const coverVideo =
+    row.cover_video_url && isAllowedBlogUrl(row.cover_video_url) ? String(row.cover_video_url).trim() : null;
+
+  return {
+    ...row,
+    cover_url: coverImage,
+    cover_image_url: coverImage,
+    cover_video_url: coverVideo,
+    is_published: parseBoolFlag(row.is_published),
+    is_pinned: parseBoolFlag(row.is_pinned),
+  };
+}
+
+function isAdminEmployerRecord(emp: any): boolean {
+  if (!emp || typeof emp !== "object") return false;
+  const role = String(emp.role || "").trim().toLowerCase();
+  return [
+    "admin",
+    "super_admin",
+    "super-admin",
+    "superadmin",
+    "админ",
+    "супер-админ",
+    "суперадмин",
+  ].includes(role);
+}
+
+async function verifyAdminRequest(req: Request): Promise<{ ok: true; admin: any } | { ok: false; status: number; error: string }> {
+  const authHeader = (req.headers.authorization || req.headers["x-employer-token"] || "") as string;
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    return { ok: false, status: 401, error: "Требуется авторизация администратора" };
+  }
+
+  const db = await getProTalkDB();
+  let emp: any = null;
+
+  if (employerSessions[token]) {
+    emp = employerSessions[token];
+  }
+  if (!emp) {
+    emp = await resolveEmployerByToken(db, token);
+  }
+  if (!emp && token.startsWith("emp_token_")) {
+    const rawId = token.slice("emp_token_".length).trim();
+    if (rawId) {
+      const cleanPid = rawId.replace(/^emp-?/i, "").trim();
+      emp = await db
+        .get(
+          "SELECT id, public_id, email, contact_email, name, role FROM employers WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1",
+          [rawId, cleanPid]
+        )
+        .catch(() => null);
+    }
+  }
+
+  if (!emp) {
+    return { ok: false, status: 401, error: "Сессия администратора не найдена или истекла" };
+  }
+  if (!isAdminEmployerRecord(emp)) {
+    return { ok: false, status: 403, error: "Доступ разрешён только администратору" };
+  }
+  return { ok: true, admin: emp };
+}
+
 export const blogRouter = Router();
 
 blogRouter.get("/posts", async (req: Request, res: Response) => {
   try {
-    const all = req.query.all === "true";
-    const category = req.query.category as string | undefined;
+    await ensureBlogSchemaPg();
 
-    let pgSql = "";
+    const all = req.query.all === "true";
+    const paginated = req.query.paginated === "1" || req.query.paginated === "true";
+    const category = req.query.category as string | undefined;
+    const rssCategory = typeof req.query.rss_category === "string" ? req.query.rss_category.trim() : "";
+    const search = typeof (req.query.q || req.query.search) === "string" ? String(req.query.q || req.query.search).trim() : "";
+
+    const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+    const safeLimit =
+      rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(200, Math.round(rawLimit))
+        : paginated
+        ? 20
+        : undefined;
+    const safeOffset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.round(rawOffset) : 0;
+
     if (category === "academy") {
-      pgSql = all
-        ? "SELECT * FROM posts WHERE category = 'academy' OR CAST(public_id AS BIGINT) >= 770001 ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC"
-        : "SELECT * FROM posts WHERE (category = 'academy' OR CAST(public_id AS BIGINT) >= 770001) AND (is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true') ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC";
-    } else if (category === "blog") {
-      pgSql = all
-        ? "SELECT * FROM posts WHERE (category IS NULL OR category = 'blog' OR category = '') ORDER BY created_at DESC"
-        : "SELECT * FROM posts WHERE (category IS NULL OR category = 'blog' OR category = '') AND (is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true') ORDER BY created_at DESC";
-    } else if (category === "all") {
-      pgSql = all
-        ? "SELECT * FROM posts ORDER BY created_at DESC"
-        : "SELECT * FROM posts WHERE is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true' ORDER BY created_at DESC";
-    } else {
-      pgSql = all 
-        ? "SELECT * FROM posts ORDER BY created_at DESC" 
-        : "SELECT * FROM posts WHERE (category IS NULL OR category = 'blog' OR category = '') AND (is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true') ORDER BY created_at DESC";
+      const academyWhere = all
+        ? "WHERE (category = 'academy' OR CAST(public_id AS BIGINT) >= 770001)"
+        : "WHERE (category = 'academy' OR CAST(public_id AS BIGINT) >= 770001) AND (is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true')";
+      const baseOrder = "ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC";
+
+      if (paginated) {
+        const pageLimit = Math.min(50, safeLimit || 20);
+        const [cntRow, rows] = await Promise.all([
+          queryGetPg<{ cnt: string | number }>(`SELECT COUNT(*) AS cnt FROM posts ${academyWhere}`),
+          queryAllPg(`SELECT * FROM posts ${academyWhere} ${baseOrder} LIMIT $1 OFFSET $2`, [pageLimit, safeOffset]),
+        ]);
+        const total = Number(cntRow?.cnt || 0);
+        return res.json({
+          items: (rows || []).map(normalizePostRow),
+          total,
+          hasMore: safeOffset + (rows?.length || 0) < total,
+        });
+      }
+
+      const sql = `SELECT * FROM posts ${academyWhere} ${baseOrder}`;
+      const rows = await queryAllPg(sql).catch(async () => {
+        const db = await getProTalkDB();
+        await ensureAcademyPostsSeeded(db);
+        return db.all(sql);
+      });
+      return res.json((rows || []).map(normalizePostRow));
     }
 
+    const whereClauses: string[] = [];
+    const params: any[] = [];
+
+    if (category === "all" || (all && !category)) {
+      // Admin all posts view
+    } else {
+      whereClauses.push("(category IS NULL OR category = 'blog' OR category = '')");
+    }
+
+    if (!all) {
+      whereClauses.push("(is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true')");
+    }
+
+    if (rssCategory && rssCategory.toLowerCase() !== "all") {
+      params.push(rssCategory);
+      whereClauses.push(`LOWER(COALESCE(rss_category, '')) = LOWER($${params.length})`);
+    }
+
+    if (search) {
+      params.push(`%${search}%`);
+      const pIdx = params.length;
+      whereClauses.push(
+        `(title ILIKE $${pIdx} OR COALESCE(excerpt, '') ILIKE $${pIdx} OR COALESCE(content_md, '') ILIKE $${pIdx} OR COALESCE(rss_category, '') ILIKE $${pIdx})`
+      );
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const orderSql = `ORDER BY COALESCE(is_pinned, 0) DESC, pinned_at DESC NULLS LAST, created_at DESC`;
+
+    if (paginated) {
+      const countSql = `SELECT COUNT(*) AS cnt FROM posts ${whereSql}`;
+      const countRow = await queryGetPg<{ cnt: string | number }>(countSql, params);
+      const total = Number(countRow?.cnt || 0);
+
+      const pageLimit = Math.min(50, safeLimit || 20);
+      const dataParams = [...params, pageLimit, safeOffset];
+      const itemsSql = `SELECT * FROM posts ${whereSql} ${orderSql} LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`;
+      const rows = await queryAllPg(itemsSql, dataParams);
+
+      const catRows = await queryAllPg<{ rss_category: string }>(
+        `SELECT DISTINCT rss_category
+         FROM posts
+         WHERE (category IS NULL OR category = 'blog' OR category = '')
+           AND (is_published = 1 OR CAST(is_published AS TEXT) = '1' OR CAST(is_published AS TEXT) = 'true')
+           AND rss_category IS NOT NULL
+           AND TRIM(rss_category) != ''
+         ORDER BY rss_category ASC;`
+      ).catch(() => []);
+
+      const [pinnedCount, acadCntRow] = await Promise.all([
+        getPinnedBlogPostsCountPg().catch(() => 0),
+        all
+          ? queryGetPg<{ cnt: string | number }>(
+              `SELECT COUNT(*) AS cnt FROM posts WHERE category = 'academy' OR CAST(public_id AS BIGINT) >= 770001`
+            ).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      return res.json({
+        items: (rows || []).map(normalizePostRow),
+        total,
+        hasMore: safeOffset + (rows?.length || 0) < total,
+        categories: (catRows || []).map((c) => c.rss_category),
+        pinnedCount,
+        academyTotal: acadCntRow ? Number(acadCntRow.cnt || 0) : undefined,
+      });
+    }
+
+    let limitSql = "";
+    const queryParams = [...params];
+    if (safeLimit) {
+      queryParams.push(safeLimit, safeOffset);
+      limitSql = ` LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`;
+    }
+
+    const fullSql = `SELECT * FROM posts ${whereSql} ${orderSql}${limitSql}`;
     try {
-      const pgRes = await executeProTalkQuery(pgSql);
-      if (pgRes.rows && pgRes.rows.length > 0) {
-        return res.json(pgRes.rows.map((r: any) => ({ ...r, is_published: Boolean(r.is_published && r.is_published !== "0" && r.is_published !== "false") })));
+      const pgRes = await executeProTalkQuery(fullSql, queryParams);
+      if (pgRes.rows) {
+        return res.json(pgRes.rows.map(normalizePostRow));
       }
     } catch (pgErr) {
       console.warn("[Blog PG query notice]:", pgErr);
     }
 
     const dbInstance = await getProTalkDB();
-    if (category === "academy" || category === "all" || !category) {
+    if (category === "all" || !category) {
       await ensureAcademyPostsSeeded(dbInstance);
     }
-    const rows = (await dbInstance.all(pgSql)) || [];
-    res.json(rows.map((r: any) => ({ ...r, is_published: Boolean(r.is_published) })));
+    const rows = (await dbInstance.all(fullSql, queryParams)) || [];
+    return res.json(rows.map(normalizePostRow));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-blogRouter.get(["/academy", "/academy/posts"], async (req: Request, res: Response) => {
+blogRouter.get(["/academy", "/academy/posts"], async (_req: Request, res: Response) => {
   try {
     try {
       const pgRes = await executeProTalkQuery(
         "SELECT * FROM posts WHERE category = 'academy' OR CAST(public_id AS BIGINT) >= 770001 ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC"
       );
       if (pgRes.rows && pgRes.rows.length > 0) {
-        return res.json(pgRes.rows.map((r: any) => ({ ...r, is_published: Boolean(r.is_published && r.is_published !== "0" && r.is_published !== "false") })));
+        return res.json(pgRes.rows.map(normalizePostRow));
       }
     } catch {}
 
     const dbInstance = await getProTalkDB();
     await ensureAcademyPostsSeeded(dbInstance);
-    const rows = (await dbInstance.all(
-      "SELECT * FROM posts WHERE category = 'academy' OR CAST(public_id AS BIGINT) >= 770001 ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC"
-    )) || [];
-    res.json(rows.map((r: any) => ({ ...r, is_published: Boolean(r.is_published) })));
+    const rows =
+      (await dbInstance.all(
+        "SELECT * FROM posts WHERE category = 'academy' OR CAST(public_id AS BIGINT) >= 770001 ORDER BY CAST(public_id AS BIGINT) ASC, created_at ASC"
+      )) || [];
+    res.json(rows.map(normalizePostRow));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -145,58 +315,150 @@ blogRouter.get(["/academy", "/academy/posts"], async (req: Request, res: Respons
 
 blogRouter.get("/posts/:identifier", async (req: Request, res: Response) => {
   try {
-    const { identifier } = req.params;
+    await ensureBlogSchemaPg();
+    const rawIdentifier = String(req.params.identifier || "").trim();
+    const strippedPostPrefix = /^post\d+$/i.test(rawIdentifier)
+      ? rawIdentifier.replace(/^post/i, "")
+      : rawIdentifier;
+
     try {
       const pgRes = await executeProTalkQuery(
-        "SELECT * FROM posts WHERE CAST(public_id AS TEXT) = $1 OR id = $1 OR slug = $1 LIMIT 1",
-        [identifier]
+        `SELECT * FROM posts
+         WHERE CAST(public_id AS TEXT) = $1
+            OR id = $1
+            OR slug = $1
+            OR CAST(public_id AS TEXT) = $2
+         LIMIT 1`,
+        [rawIdentifier, strippedPostPrefix]
       );
       if (pgRes.rows && pgRes.rows.length > 0) {
-        const r = pgRes.rows[0];
-        return res.json({ ...r, is_published: Boolean(r.is_published && r.is_published !== "0" && r.is_published !== "false") });
+        return res.json(normalizePostRow(pgRes.rows[0]));
       }
     } catch {}
 
     const dbInstance = await getProTalkDB();
     let post = await dbInstance.get(
-      "SELECT * FROM posts WHERE CAST(public_id AS TEXT) = ? OR id = ? OR slug = ?",
-      [identifier, identifier, identifier]
+      "SELECT * FROM posts WHERE CAST(public_id AS TEXT) = ? OR id = ? OR slug = ? OR CAST(public_id AS TEXT) = ?",
+      [rawIdentifier, rawIdentifier, rawIdentifier, strippedPostPrefix]
     );
     if (!post) {
       await ensureAcademyPostsSeeded(dbInstance);
       post = await dbInstance.get(
-        "SELECT * FROM posts WHERE CAST(public_id AS TEXT) = ? OR id = ? OR slug = ?",
-        [identifier, identifier, identifier]
+        "SELECT * FROM posts WHERE CAST(public_id AS TEXT) = ? OR id = ? OR slug = ? OR CAST(public_id AS TEXT) = ?",
+        [rawIdentifier, rawIdentifier, rawIdentifier, strippedPostPrefix]
       );
     }
     if (!post) return res.status(404).json({ error: "Post not found" });
-    res.json({ ...post, is_published: Boolean(post.is_published) });
+    res.json(normalizePostRow(post));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
+blogRouter.post("/posts/:id/pin", async (req: Request, res: Response) => {
+  try {
+    const auth = await verifyAdminRequest(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ error: auth.error });
+    }
+
+    await ensureBlogSchemaPg();
+    const { id } = req.params;
+    const target = await queryGetPg<any>(
+      `SELECT * FROM posts WHERE id = $1 OR CAST(public_id AS TEXT) = $1 LIMIT 1`,
+      [id]
+    );
+    if (!target) {
+      return res.status(404).json({ error: "Статья не найдена" });
+    }
+    if (target.category === "academy" || Number(target.public_id) >= 770001) {
+      return res.status(400).json({ error: "Закрепление доступно только для статей блога" });
+    }
+
+    const currentlyPinned = parseBoolFlag(target.is_pinned);
+    const desiredPinned = typeof req.body?.pinned === "boolean" ? req.body.pinned : !currentlyPinned;
+
+    if (desiredPinned && !currentlyPinned) {
+      const pinnedCount = await getPinnedBlogPostsCountPg();
+      if (pinnedCount >= MAX_PINNED_POSTS) {
+        return res.status(400).json({
+          error: `Можно закрепить не более ${MAX_PINNED_POSTS} статей. Сначала открепите одну из закреплённых публикаций.`,
+          pinnedCount,
+          maxPinned: MAX_PINNED_POSTS,
+        });
+      }
+    }
+
+    const nextPinnedInt = desiredPinned ? 1 : 0;
+    const nextPinnedAt = desiredPinned ? new Date().toISOString() : null;
+
+    await executeProTalkQuery(
+      `UPDATE posts SET is_pinned = $1, pinned_at = $2 WHERE id = $3`,
+      [nextPinnedInt, nextPinnedAt, target.id]
+    );
+
+    const updated = await queryGetPg<any>(`SELECT * FROM posts WHERE id = $1 LIMIT 1`, [target.id]);
+    const pinnedCount = await getPinnedBlogPostsCountPg();
+
+    return res.json({
+      success: true,
+      post: normalizePostRow(updated),
+      pinnedCount,
+      maxPinned: MAX_PINNED_POSTS,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+blogRouter.post("/blog/sync-rss", async (req: Request, res: Response) => {
+  try {
+    const auth = await verifyAdminRequest(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ error: auth.error });
+    }
+
+    const result = await syncSavRssFeed({
+      limit: req.body?.limit !== undefined ? Number(req.body.limit) : 100,
+      category: typeof req.body?.category === "string" ? req.body.category : undefined,
+    });
+
+    if (!result.ok) {
+      return res.status(502).json({ success: false, ...result });
+    }
+
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 blogRouter.post("/posts", async (req: Request, res: Response) => {
   try {
+    await ensureBlogSchemaPg();
     const dbInstance = await getProTalkDB();
-    const { title, cover_url, excerpt, content_md, is_published, category } = req.body;
+    const { title, cover_url, excerpt, content_md, is_published, category, rss_category } = req.body;
     const id = "post-" + Math.random().toString(36).substring(2, 9);
-    const public_id = Math.floor(700000 + Math.random() * 90000);
+    const public_id = Math.floor(700000 + Math.random() * 69000);
     const slug = transliterateToSlug(title || "") || `post${public_id}`;
     const cleanExcerpt = cleanArticleExcerptServer(excerpt || content_md || "", 240);
     const created_at = new Date().toISOString();
     const updated_at = created_at;
     const pubInt = is_published ? 1 : 0;
     const postCat = category || "blog";
+    const normalizedCover =
+      postCat === "academy"
+        ? cover_url || "/files/13/rr-logo.png"
+        : normalizeBlogCoverImageUrl(cover_url);
 
     await dbInstance.run(
-      `INSERT INTO posts (id, public_id, slug, title, cover_url, excerpt, content_md, is_published, category, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, public_id, slug, title || "", cover_url || "", cleanExcerpt, content_md || "", pubInt, postCat, created_at, updated_at]
+      `INSERT INTO posts (id, public_id, slug, title, cover_url, cover_image_url, excerpt, content_md, is_published, category, rss_category, is_pinned, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [id, public_id, slug, title || "", normalizedCover, normalizedCover, cleanExcerpt, content_md || "", pubInt, postCat, rss_category || null, created_at, updated_at]
     );
 
     const created = await dbInstance.get("SELECT * FROM posts WHERE id = ?", [id]);
-    res.json({ ...created, is_published: Boolean(created?.is_published) });
+    res.json(normalizePostRow(created));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -204,22 +466,40 @@ blogRouter.post("/posts", async (req: Request, res: Response) => {
 
 blogRouter.put("/posts/:id", async (req: Request, res: Response) => {
   try {
+    await ensureBlogSchemaPg();
     const dbInstance = await getProTalkDB();
     const { id } = req.params;
-    const { title, cover_url, excerpt, content_md, is_published, category } = req.body;
+    const { title, cover_url, excerpt, content_md, is_published, category, rss_category } = req.body;
     const updated_at = new Date().toISOString();
     const pubInt = is_published !== undefined ? (is_published ? 1 : 0) : 1;
     const slug = req.body.slug || transliterateToSlug(title || "");
     const cleanExcerpt = cleanArticleExcerptServer(excerpt || content_md || "", 240);
 
+    const existing = await dbInstance.get("SELECT category, public_id FROM posts WHERE id = ? OR CAST(public_id AS TEXT) = ? LIMIT 1", [id, id]);
+    const effectiveCategory = category || existing?.category || "blog";
+    const normalizedCover =
+      effectiveCategory === "academy" || Number(existing?.public_id) >= 770001
+        ? cover_url || "/files/13/rr-logo.png"
+        : normalizeBlogCoverImageUrl(cover_url);
+
     await dbInstance.run(
-      `UPDATE posts SET title = ?, slug = CASE WHEN ? != '' THEN ? ELSE slug END, cover_url = ?, excerpt = ?, content_md = ?, is_published = ?, category = COALESCE(?, category), updated_at = ?
+      `UPDATE posts
+       SET title = ?,
+           slug = CASE WHEN ? != '' THEN ? ELSE slug END,
+           cover_url = ?,
+           cover_image_url = ?,
+           excerpt = ?,
+           content_md = ?,
+           is_published = ?,
+           category = COALESCE(?, category),
+           rss_category = COALESCE(?, rss_category),
+           updated_at = ?
        WHERE id = ? OR CAST(public_id AS TEXT) = ?`,
-      [title || "", slug, slug, cover_url || "", cleanExcerpt, content_md || "", pubInt, category || null, updated_at, id, id]
+      [title || "", slug, slug, normalizedCover, normalizedCover, cleanExcerpt, content_md || "", pubInt, category || null, rss_category || null, updated_at, id, id]
     );
 
     const updated = await dbInstance.get("SELECT * FROM posts WHERE id = ? OR CAST(public_id AS TEXT) = ?", [id, id]);
-    res.json({ ...updated, is_published: Boolean(updated?.is_published) });
+    res.json(normalizePostRow(updated));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
